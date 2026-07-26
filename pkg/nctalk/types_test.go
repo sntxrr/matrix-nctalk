@@ -1,6 +1,9 @@
 package nctalk
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestConversationIsOneToOne(t *testing.T) {
 	tests := []struct {
@@ -107,5 +110,62 @@ func TestBotFeatureBitsMatchSpreed(t *testing.T) {
 func TestBotStateConstantsMatchSpreed(t *testing.T) {
 	if BotStateDisabled != 0 || BotStateEnabled != 1 || BotStateNoSetup != 2 || BotStateUnavailable != 3 {
 		t.Error("bot state constants no longer match spreed's Bot::STATE_* values")
+	}
+}
+
+// PHP encodes an empty associative array as `[]`, so Talk sends that for every
+// message with no rich objects. Decoding straight into a map rejects those,
+// which is the common case, not an edge case.
+func TestMessageParamsAcceptsPHPEmptyArray(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		want    int
+		wantErr bool
+	}{
+		{name: "empty array", json: `{"parameters":[]}`, want: 0},
+		{name: "null", json: `{"parameters":null}`, want: 0},
+		{name: "absent", json: `{}`, want: 0},
+		{name: "empty object", json: `{"parameters":{}}`, want: 0},
+		{
+			name: "populated object",
+			json: `{"parameters":{"actor":{"type":"user","id":"alice","name":"Alice"}}}`,
+			want: 1,
+		},
+		// A non-empty array is not the quirk, it is a payload we do not understand.
+		{name: "populated array", json: `{"parameters":["nope"]}`, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var out struct {
+				Parameters MessageParams `json:"parameters"`
+			}
+			err := json.Unmarshal([]byte(tc.json), &out)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if len(out.Parameters) != tc.want {
+				t.Errorf("got %d parameters, want %d", len(out.Parameters), tc.want)
+			}
+		})
+	}
+}
+
+// The same quirk applies to the chat API's own message payload.
+func TestMessageDecodesEmptyParameters(t *testing.T) {
+	var msg Message
+	raw := `{"id":72,"actorId":"bob","message":"hello","messageParameters":[]}`
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.ID != 72 || len(msg.MessageParameters) != 0 {
+		t.Errorf("msg = %+v", msg)
 	}
 }

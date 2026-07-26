@@ -85,8 +85,8 @@ type Note struct {
 
 // NoteContent is the decoded payload of Note.Content.
 type NoteContent struct {
-	Message    string                  `json:"message"`
-	Parameters map[string]MessageParam `json:"parameters"`
+	Message    string        `json:"message"`
+	Parameters MessageParams `json:"parameters"`
 }
 
 // MessageID parses the note's message ID.

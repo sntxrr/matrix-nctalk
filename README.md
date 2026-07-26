@@ -39,6 +39,8 @@ $EDITOR config.yaml                    # fill in homeserver, appservice, network
 
 Register `registration.yaml` with your homeserver and restart it.
 
+**`appservice.public_address` must be set to a real URL.** The Matrix connector treats the placeholder value as unset and then exposes no HTTP server at all, which is what the webhook endpoint is mounted on — so the bridge refuses to start. Set it to the address Nextcloud can reach the bridge at.
+
 ### 2. Install the bot on Nextcloud
 
 Generate a shared secret and install the bot, pointing it at the bridge's public address:
@@ -65,6 +67,35 @@ login
 ```
 
 Pick **Browser** and approve the request in your Nextcloud session. Nextcloud mints a dedicated app password; the bridge never sees your account password. The **App password** flow is available for headless setups.
+
+## Local development stack
+
+`docker-compose.dev.yaml` runs Nextcloud + Talk, Postgres and Synapse locally. The bridge itself runs on the host so it can be rebuilt and debugged without a container round trip.
+
+```sh
+make dev-up       # start everything and configure it (safe to re-run)
+make dev-bridge   # run the bridge against it, in the foreground
+```
+
+`dev-up` starts Nextcloud, installs Talk, creates test users, registers the bridge bot, generates the bridge config and appservice registration, and starts Synapse. The ordering matters and is why it is a script: Synapse refuses to start when its config names an appservice registration that does not exist, and only the bridge can generate that file.
+
+| | |
+|---|---|
+| Nextcloud | <http://localhost:8081> — `admin` / `adminpassword`, plus `alice` and `bob` |
+| Synapse | <http://localhost:8008> — server name `dev.local`, registration open |
+| Bridge | <http://localhost:29337> |
+
+Talk reaches the bridge at `host.docker.internal`. No tunnel is needed: Talk's `BotService` passes `allow_local_address`, so it will post webhooks to private addresses, and it accepts `http://` bot URLs.
+
+To exercise it: log in as `alice` through the bridge bot, create a conversation in Talk that alice moderates, and send a message. The bridge enables its own bot in the conversation, and messages flow both ways.
+
+```sh
+make dev-logs     # follow container logs
+make dev-down     # stop, keeping all data
+make dev-reset    # destroy the stack and all its data (prompts first)
+```
+
+Everything in the dev stack uses fixed throwaway credentials and is bound to localhost. `dev/config.yaml` and `dev/synapse/` are gitignored because generating the registration writes live tokens and a signing key into them.
 
 ## How it works
 

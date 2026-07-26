@@ -46,8 +46,15 @@ type pendingEvent struct {
 // that process verified events.
 func (nc *NCTalkConnector) registerWebhook(ctx context.Context) error {
 	server, ok := nc.Bridge.Matrix.(bridgev2.MatrixConnectorWithServer)
-	if !ok || server.GetRouter() == nil {
+	if !ok {
 		return fmt.Errorf("the Matrix connector does not expose an HTTP server, which is required to receive Talk bot webhooks")
+	}
+	// The standard Matrix connector only exposes its router once a real
+	// public_address is configured — it reports the example value as unset. That
+	// is easy to miss, and the resulting failure says nothing about the config,
+	// so name the actual setting here.
+	if server.GetRouter() == nil {
+		return fmt.Errorf("appservice.public_address is not set to a real URL, so there is no HTTP server to receive Talk bot webhooks on; set it to the address Nextcloud can reach the bridge at")
 	}
 
 	nc.router = newLoginRouter(nc.Bridge)
@@ -287,6 +294,9 @@ func (c *NCTalkClient) queueMessage(ctx context.Context, msg *talkMessage) {
 				return c.Int64("talk_message_id", msg.MessageID).Str("talk_token", msg.Token)
 			},
 		},
+		// Data is what ConvertMessageFunc is handed; without it the conversion is
+		// called with a nil message.
+		Data:               msg,
 		ID:                 makeMessageID(c.host(), msg.Token, msg.MessageID),
 		ConvertMessageFunc: c.convertMessage,
 	})

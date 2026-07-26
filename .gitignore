@@ -14,3 +14,13 @@
 
 # Coverage output
 /coverage.out
+
+# Local dev stack state. dev/config.template.yaml is committed; the config
+# generated from it is not, because generating the appservice registration
+# writes live tokens into it. Synapse's directory holds its signing key and
+# database.
+/dev/config.yaml
+/dev/matrix-nctalk.db
+/dev/matrix-nctalk.db-shm
+/dev/matrix-nctalk.db-wal
+/dev/synapse/

@@ -1,5 +1,10 @@
 package nctalk
 
+import (
+	"bytes"
+	"encoding/json"
+)
+
 // Actor types used by Talk for message senders and participants.
 const (
 	ActorUsers           = "users"
@@ -110,27 +115,27 @@ func (p *Participant) IsModerator() bool {
 
 // Message is a Talk chat message.
 type Message struct {
-	ID                int64                   `json:"id"`
-	Token             string                  `json:"token"`
-	ActorType         string                  `json:"actorType"`
-	ActorID           string                  `json:"actorId"`
-	ActorDisplayName  string                  `json:"actorDisplayName"`
-	Timestamp         int64                   `json:"timestamp"`
-	Message           string                  `json:"message"`
-	MessageType       string                  `json:"messageType"`
-	MessageParameters map[string]MessageParam `json:"messageParameters"`
-	SystemMessage     string                  `json:"systemMessage"`
-	Deleted           bool                    `json:"deleted"`
-	ExpirationTime    int64                   `json:"expirationTimestamp"`
-	ReferenceID       string                  `json:"referenceId"`
-	Reactions         map[string]int          `json:"reactions"`
-	Parent            *Message                `json:"parent"`
-	LastEditTimestamp int64                   `json:"lastEditTimestamp"`
-	LastEditActorID   string                  `json:"lastEditActorId"`
-	LastEditActorType string                  `json:"lastEditActorType"`
-	Silent            bool                    `json:"silent"`
-	MarkdownFlag      bool                    `json:"markdown"`
-	ThreadID          int64                   `json:"threadId"`
+	ID                int64          `json:"id"`
+	Token             string         `json:"token"`
+	ActorType         string         `json:"actorType"`
+	ActorID           string         `json:"actorId"`
+	ActorDisplayName  string         `json:"actorDisplayName"`
+	Timestamp         int64          `json:"timestamp"`
+	Message           string         `json:"message"`
+	MessageType       string         `json:"messageType"`
+	MessageParameters MessageParams  `json:"messageParameters"`
+	SystemMessage     string         `json:"systemMessage"`
+	Deleted           bool           `json:"deleted"`
+	ExpirationTime    int64          `json:"expirationTimestamp"`
+	ReferenceID       string         `json:"referenceId"`
+	Reactions         map[string]int `json:"reactions"`
+	Parent            *Message       `json:"parent"`
+	LastEditTimestamp int64          `json:"lastEditTimestamp"`
+	LastEditActorID   string         `json:"lastEditActorId"`
+	LastEditActorType string         `json:"lastEditActorType"`
+	Silent            bool           `json:"silent"`
+	MarkdownFlag      bool           `json:"markdown"`
+	ThreadID          int64          `json:"threadId"`
 }
 
 // Message types Talk reports in the messageType field.
@@ -143,6 +148,30 @@ const (
 	MessageTypeRecordAudio    = "record-audio"
 	MessageTypeRecordVideo    = "record-video"
 )
+
+// MessageParams is a Talk Rich Object String parameter map.
+//
+// It exists to absorb a PHP encoding quirk: an empty associative array encodes
+// as the JSON array `[]` rather than the object `{}`, so Talk sends `[]` for
+// every message that carries no rich objects — which is most of them. Decoding
+// that straight into a map fails, so the common case would break.
+type MessageParams map[string]MessageParam
+
+// UnmarshalJSON accepts an object, an empty array, or null.
+func (p *MessageParams) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) || bytes.Equal(trimmed, []byte("[]")) {
+		*p = nil
+		return nil
+	}
+	// Not the alias: that would recurse straight back into this method.
+	var out map[string]MessageParam
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	*p = out
+	return nil
+}
 
 // MessageParam is one entry of a Rich Object String parameter map. The union of
 // fields across object types is wide; only those the bridge consumes are named.

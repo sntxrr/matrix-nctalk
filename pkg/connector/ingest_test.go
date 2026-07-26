@@ -366,3 +366,49 @@ func TestEventLogContextsAreSafe(t *testing.T) {
 	}
 	reaction.LogContext(zerolog.Nop().With())
 }
+
+// Driving the queued event through the interface bridgev2 actually calls, rather
+// than reaching past it to convertMessage directly. Asserting only on the event's
+// fields misses a missing Data, which conversion then dereferences.
+func TestQueuedMessageConvertsThroughRemoteEvent(t *testing.T) {
+	client, rec := newIngestClient(t)
+
+	if err := client.handleCreate(context.Background(), mustParse(t, createFixtureJSON), "abc123token", time.Now()); err != nil {
+		t.Fatalf("handleCreate failed: %v", err)
+	}
+	evt, ok := rec.events[0].(bridgev2.RemoteMessage)
+	if !ok {
+		t.Fatalf("queued %T, want a RemoteMessage", rec.events[0])
+	}
+
+	converted, err := evt.ConvertMessage(context.Background(), newTestPortal(client.host(), "abc123token"), nil)
+	if err != nil {
+		t.Fatalf("ConvertMessage failed: %v", err)
+	}
+	if len(converted.Parts) != 1 {
+		t.Fatalf("got %d parts, want 1", len(converted.Parts))
+	}
+	if body := converted.Parts[0].Content.Body; body == "" {
+		t.Error("converted message has an empty body")
+	}
+}
+
+// The same for reactions, which carry their payload on the event itself.
+func TestQueuedReactionCarriesItsEmoji(t *testing.T) {
+	client, rec := newIngestClient(t)
+	const likeFixture = `{"type":"Like","actor":{"type":"Person","id":"users/bob"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"target":{"type":"Collection","id":"abc123token"},"content":"👍"}`
+
+	if err := client.handleReaction(context.Background(), mustParse(t, likeFixture), "abc123token", time.Now()); err != nil {
+		t.Fatalf("handleReaction failed: %v", err)
+	}
+	evt, ok := rec.events[0].(bridgev2.RemoteReaction)
+	if !ok {
+		t.Fatalf("queued %T, want a RemoteReaction", rec.events[0])
+	}
+	if emoji, _ := evt.GetReactionEmoji(); emoji == "" {
+		t.Error("queued reaction has no emoji")
+	}
+	if evt.GetTargetMessage() == "" {
+		t.Error("queued reaction has no target message")
+	}
+}

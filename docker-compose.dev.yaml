@@ -1,0 +1,96 @@
+# Development stack for the Matrix <-> Nextcloud Talk bridge.
+#
+# Everything here is localhost-only and uses fixed throwaway credentials so the
+# stack is reproducible. Never point this at anything real.
+#
+# The bridge itself runs on the host rather than in a container, so it can be
+# rebuilt and attached to a debugger without a container round trip. Both
+# services reach it through host.docker.internal, and Talk permits webhooks to
+# local addresses (BotService passes allow_local_address), so no tunnel is
+# needed.
+#
+#   Nextcloud   http://localhost:8081   admin / adminpassword
+#   Synapse     http://localhost:8008   server name "dev.local"
+#   Bridge      http://localhost:29337  (run with `make dev-bridge`)
+
+name: matrix-nctalk-dev
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: nextcloud
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nextcloud -d nextcloud"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  nextcloud:
+    image: nextcloud:31-apache
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8081:80"
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: nextcloud
+      NEXTCLOUD_ADMIN_USER: admin
+      NEXTCLOUD_ADMIN_PASSWORD: adminpassword
+      # localhost is how the host reaches it; the container name is how Synapse
+      # would, if it ever needs to.
+      NEXTCLOUD_TRUSTED_DOMAINS: "localhost nextcloud host.docker.internal"
+      # Talk stamps outgoing webhooks with this URL in X-Nextcloud-Talk-Backend,
+      # and the bridge routes on its host, so it has to match the URL users log
+      # in with.
+      OVERWRITECLIURL: "http://localhost:8081"
+      OVERWRITEPROTOCOL: http
+      OVERWRITEHOST: "localhost:8081"
+    volumes:
+      - nextcloud:/var/www/html
+    extra_hosts:
+      # Portability: Docker Desktop provides this name already, plain Linux
+      # Docker does not.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # status.php reports installed:true only once the install has finished, so
+      # this is the signal the bootstrap script waits on.
+      test: ["CMD-SHELL", "curl -fsS http://localhost/status.php | grep -q '\"installed\":true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+
+  synapse:
+    image: matrixdotorg/synapse:latest
+    restart: unless-stopped
+    ports:
+      - "8008:8008"
+    environment:
+      SYNAPSE_SERVER_NAME: dev.local
+      SYNAPSE_REPORT_STATS: "no"
+    volumes:
+      # Bind-mounted rather than a named volume so the appservice registration
+      # the bridge generates can be dropped straight in.
+      - ./dev/synapse:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8008/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 30s
+
+volumes:
+  db:
+  nextcloud:

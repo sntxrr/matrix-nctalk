@@ -1,0 +1,53 @@
+# Bridge config for the local dev stack.
+#
+# This holds only the values that differ from the defaults. Copy it to
+# dev/config.yaml and run the bridge once: bridgev2's config upgrader fills in
+# every other key from the example config and writes the result back.
+#
+# Do not edit dev/config.yaml expecting changes here to reach it; edit the copy,
+# or delete it and re-run `make dev-up`.
+
+homeserver:
+    address: http://localhost:8008
+    domain: dev.local
+
+appservice:
+    # Synapse runs in a container, so it reaches the bridge on the host through
+    # the Docker gateway rather than through localhost.
+    address: http://host.docker.internal:29337
+    # And the bridge has to listen on all interfaces to be reachable there.
+    hostname: 0.0.0.0
+    port: 29337
+    # This is what Nextcloud posts webhooks to. It must be set to a real value:
+    # the Matrix connector treats the example address as unset and then exposes
+    # no HTTP router at all, which is what the webhook endpoint is mounted on.
+    public_address: http://host.docker.internal:29337
+
+database:
+    type: sqlite3-fk-wal
+    uri: file:dev/matrix-nctalk.db?_txlock=immediate
+
+bridge:
+    permissions:
+        # Everyone on the dev homeserver gets full access, including the admin
+        # tools, so there is no second account to juggle while testing.
+        "dev.local": admin
+    # Bridge Matrix m.notice messages too. Off by default to avoid bot loops, but
+    # in dev it is useful for checking that notices convert at all.
+    bridge_notices: true
+
+network:
+    # Must match the secret dev/bootstrap-nextcloud.sh installs the bot with.
+    bot_secret: "nctalk-dev-shared-secret-not-for-production-0001"
+    bot_name: matrix-nctalk-dev
+    auto_enable_bot: true
+    # Only the dev server, so a typo cannot send credentials somewhere real.
+    allowed_servers:
+        - "localhost:8081"
+    relay_unlinked_users: true
+
+logging:
+    min_level: debug
+    writers:
+        - type: stdout
+          format: pretty-colored
