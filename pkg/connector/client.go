@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -49,6 +50,13 @@ type NCTalkClient struct {
 	// downloader overrides where outgoing media is fetched from. It is nil in
 	// production, where the bridge bot is used.
 	downloader mediaDownloader
+	// portalFinder overrides where existing portals are looked up. It is nil in
+	// production, where the bridge is used.
+	portalFinder portalLookup
+
+	// syncMu guards syncCancel, which stops the periodic conversation resync.
+	syncMu     sync.Mutex
+	syncCancel context.CancelFunc
 }
 
 var _ bridgev2.NetworkAPI = (*NCTalkClient)(nil)
@@ -123,6 +131,10 @@ func (c *NCTalkClient) Connect(ctx context.Context) {
 		}
 	}
 
+	// Nothing Talk sends can cover a period when the bridge was not listening,
+	// so the resync loop is what closes that gap, starting with a pass now.
+	c.startPeriodicSync()
+
 	log.Info().
 		Str("nextcloud_user", me.ID).
 		Str("host", c.host()).
@@ -132,8 +144,10 @@ func (c *NCTalkClient) Connect(ctx context.Context) {
 }
 
 // Disconnect implements bridgev2.NetworkAPI. There is no persistent connection
-// to tear down.
-func (c *NCTalkClient) Disconnect() {}
+// to tear down, only the background resync loop.
+func (c *NCTalkClient) Disconnect() {
+	c.stopPeriodicSync()
+}
 
 // IsLoggedIn implements bridgev2.NetworkAPI.
 func (c *NCTalkClient) IsLoggedIn() bool {

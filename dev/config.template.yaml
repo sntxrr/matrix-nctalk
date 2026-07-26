@@ -36,6 +36,11 @@ bridge:
     # in dev it is useful for checking that notices convert at all.
     bridge_notices: true
 
+# Backfill is off by default, and without it a new portal starts empty and
+# nothing is recovered after the bridge has been down.
+backfill:
+    enabled: true
+
 network:
     # Must match the secret dev/bootstrap-nextcloud.sh installs the bot with.
     bot_secret: "nctalk-dev-shared-secret-not-for-production-0001"
@@ -45,6 +50,8 @@ network:
     allowed_servers:
         - "localhost:8081"
     relay_unlinked_users: true
+    # Short enough to watch a resync happen without waiting an hour for it.
+    sync_interval: 2m
 
 logging:
     min_level: debug

@@ -7,6 +7,7 @@
 package nctalk
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -113,6 +114,13 @@ func IsUnauthorized(err error) bool {
 	return e.StatusCode == http.StatusUnauthorized || e.HTTPStatus == http.StatusUnauthorized
 }
 
+// IsNotModified reports whether err is a 304. Talk answers the chat endpoint
+// with one, and no body at all, whenever there is nothing on the requested side
+// of the cursor — which for history paging means the end has been reached.
+func IsNotModified(err error) bool {
+	return hasStatus(err, http.StatusNotModified)
+}
+
 // Response carries the decoded payload plus headers the Talk API uses to
 // convey chat cursors (X-Chat-Last-Given and friends).
 type Response struct {
@@ -163,6 +171,21 @@ func (c *Client) request(ctx context.Context, method, path string, query, form u
 	// a clean IsUnauthorized signal rather than a JSON parse failure.
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, &Error{StatusCode: http.StatusUnauthorized, HTTPStatus: resp.StatusCode, Message: "invalid credentials", Body: truncate(raw)}
+	}
+
+	// Nextcloud skips the envelope entirely on some replies: 304 for "nothing to
+	// return" on the chat endpoints, and 400 when a query parameter is outside
+	// the range the route declares. Reporting the status is far more use than
+	// complaining that an empty body is not JSON.
+	if len(bytes.TrimSpace(raw)) == 0 {
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return &Response{Headers: resp.Header}, nil
+		}
+		return nil, &Error{
+			StatusCode: resp.StatusCode,
+			HTTPStatus: resp.StatusCode,
+			Message:    fmt.Sprintf("empty response body (%s)", resp.Status),
+		}
 	}
 
 	var env ocsEnvelope

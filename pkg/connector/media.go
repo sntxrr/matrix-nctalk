@@ -101,12 +101,17 @@ func (c *NCTalkClient) convertFileFromTalk(
 	// resolved for nobody in particular — a file the sender keeps in their Talk
 	// folder arrives as a bare "note.txt" — so it cannot be fetched with it.
 	// Asking for the message as this login resolves the path against their own
-	// files, which is the only form WebDAV will accept.
-	resolved, err := c.Client.GetMessage(ctx, msg.Token, msg.MessageID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve file path for message %d: %w", msg.MessageID, err)
+	// files, which is the only form WebDAV will accept. History read as this
+	// login is already in that form, so it is used as it stands.
+	params := nctalk.MessageParams(msg.Parameters)
+	if !msg.ParamsResolved {
+		resolved, err := c.Client.GetMessage(ctx, msg.Token, msg.MessageID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve file path for message %d: %w", msg.MessageID, err)
+		}
+		params = resolved.MessageParameters
 	}
-	file, ok := resolved.MessageParameters[fileParamKey(resolved.MessageParameters)]
+	file, ok := params[fileParamKey(params)]
 	if !ok || file.Path == "" {
 		return nil, fmt.Errorf("message %d has no usable file path", msg.MessageID)
 	}

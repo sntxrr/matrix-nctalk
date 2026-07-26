@@ -33,3 +33,12 @@ relay_unlinked_users: false
 # How long to wait for the user to approve a Login Flow v2 request in their
 # browser. Nextcloud expires the handshake after 20 minutes.
 login_timeout: 15m
+
+# How often to resync bridged conversations: room name, topic, avatar and member
+# list, plus any messages Talk delivered while the bridge was not running. Talk
+# retries no webhook, so this is the only thing that recovers those. A pass also
+# runs immediately whenever a login connects.
+#
+# Catching up on missed messages additionally needs `backfill.enabled: true`
+# above. Set to a negative value to turn the resync off entirely.
+sync_interval: 1h

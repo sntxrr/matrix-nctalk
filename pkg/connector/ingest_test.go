@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,13 +17,27 @@ import (
 )
 
 // recordingQueuer captures the events the connector hands to the bridge.
+//
+// The background resync loop queues from its own goroutine, so the recorder is
+// guarded; tests that share one with a running loop must read it through
+// recorded rather than touching the slice.
 type recordingQueuer struct {
+	mu     sync.Mutex
 	events []bridgev2.RemoteEvent
 }
 
 func (r *recordingQueuer) QueueRemoteEvent(_ *bridgev2.UserLogin, evt bridgev2.RemoteEvent) bridgev2.EventHandlingResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.events = append(r.events, evt)
 	return bridgev2.EventHandlingResultSuccess
+}
+
+// recorded returns a snapshot of the events queued so far.
+func (r *recordingQueuer) recorded() []bridgev2.RemoteEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]bridgev2.RemoteEvent(nil), r.events...)
 }
 
 // newIngestClient returns a client whose remote events are recorded.

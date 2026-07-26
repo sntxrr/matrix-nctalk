@@ -10,7 +10,7 @@ This is a double-puppeting bridge instead:
 - Matrix users post into Talk **as their own Nextcloud account**, not as a relay bot.
 - Ingress uses Talk's **bot webhook API**, so messages are pushed rather than polled.
 
-> **Status: early development.** Messages, files, reactions, edits, deletions and read receipts bridge both ways, with replies, mentions and formatting. History is not backfilled yet, and there is no Docker image — see [Status](#status).
+> **Status: early development.** Messages, files, reactions, edits, deletions and read receipts bridge both ways, with replies, mentions and formatting. History is backfilled into new rooms and after downtime. There is no Docker image yet — see [Status](#status).
 
 ## Requirements
 
@@ -104,6 +104,7 @@ Everything in the dev stack uses fixed throwaway credentials and is bound to loc
 | Talk → Matrix | Talk POSTs Activity Streams 2.0 events to `/_nctalk/webhook`, signed with HMAC-SHA256. The bridge verifies, enqueues, and acks immediately — Talk allows only 5 seconds and disables bots that fail repeatedly. |
 | Matrix → Talk | OCS chat API using the sender's own app password, so messages are attributed to the real Nextcloud user. Matrix users with no linked account are rejected, or relayed via the bot if `relay_unlinked_users` is on. |
 | Files | WebDAV against the user's own files, then an OCS share into the conversation. Both directions move the bytes through the bridge; nothing is hotlinked, so Matrix clients need no Nextcloud credentials. |
+| History | `GET /chat/{token}` read in whichever direction bridgev2 asks for, paging on `lastKnownMessageId` and the `X-Chat-Last-Given` header. A new room is filled with recent history; a bridge that has been down catches up on what it missed. |
 
 Conversations become **shared portals**: a Talk conversation token is global to the server and both sides of a one-to-one see the same token, so every bridged user of a conversation lands in the same Matrix room.
 
@@ -134,6 +135,27 @@ Going the other way, a file is a WebDAV `PUT` into the user's attachment folder 
 
 Also note that `PUT` overwrites silently, so a name already in use has to be found with `HEAD` and stepped around before uploading, not discovered afterwards.
 
+### Reading history is full of small traps
+
+`GET /chat/{token}` serves one page in one direction and reports the cursor for the next in the **`X-Chat-Last-Given`** header. Four things about it are easy to get wrong:
+
+- **An empty result is a `304` with no body at all** — no OCS envelope to parse. That is how the end of the history announces itself, in both directions, so it has to be read as "nothing left" rather than as a failure.
+- **`limit` above 200 is a bodyless `400`.** spreed's own controller clamps the value to 200, but the route rejects a larger one before that code runs, so the caller has to clamp too.
+- **The cursor counts messages the server withheld**, not just the ones it returned. A page can come back with a cursor and no messages — every entry hidden by expiry or visibility — so paging follows the cursor and does not stop at the first empty page.
+- **Reading history must not look like reading the chat.** `setReadMarker=0`, `noStatusUpdate=1` and `markNotificationsAsRead=0` keep a backfill from moving the user's read marker, clearing their notifications, or making them appear online in Talk.
+
+Two things fall out of reading history as the logged-in user. File paths come back already resolved against that user's own files, so a backfilled share needs none of the per-message `/context` lookup the webhook path does. Reactions, though, are reported only as a count per emoji, so the people who reacted are a separate request per message — charged against a per-batch budget, and logged when it runs out.
+
+Talk's history is also dense with system messages that narrate things the bridge already sends as themselves — every reaction, edit and deletion. Those are dropped, along with deleted messages, whose remaining "message deleted" placeholder is meaningless as history.
+
+Paging *further* back on demand — bridgev2's backwards backfill queue — is implemented, but only runs on a homeserver that supports batch sending. Synapse does not, so there the bridge fills a new room with `backfill.max_initial_messages` and goes no deeper.
+
+### Nothing retries a missed webhook
+
+Talk sends each bot event once. A bridge that is down misses those messages permanently, and no later event refers back to them. So each login resyncs its bridged conversations on a timer (`sync_interval`, default hourly) and immediately on connect: room name, topic, avatar and members, plus the conversation's last activity time, which is what tells bridgev2 to pull in anything newer than the last bridged message. Recovering missed messages also needs `backfill.enabled: true`, which is off in the default config.
+
+Only conversations that already have a portal are resynced — a timer is not a reason to pull every conversation on the server into Matrix — and when several logins share a conversation, the one that owns the portal does the work.
+
 ## Status
 
 | Milestone | State |
@@ -143,7 +165,7 @@ Also note that `PUT` overwrites silently, so a name already in use has to be fou
 | M2 — egress as the real Nextcloud user | Done |
 | M3 — reactions, edits, redactions, receipts | Done |
 | M4 — files, rich objects, system messages | Done |
-| M5 — backfill and metadata sync | Not started |
+| M5 — backfill and metadata sync | Done |
 | M6 — Docker packaging | Not started |
 
 Out of scope for v1: voice/video calls (bridged only as notices), Talk Federation interop, and breakout rooms.

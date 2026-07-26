@@ -30,6 +30,11 @@ type talkMessage struct {
 	Parameters map[string]nctalk.MessageParam
 	IsMarkdown bool
 
+	// ParamsResolved records that Parameters came from a chat API call made as
+	// this login, so a file's path in them is resolved against their own files
+	// and can be fetched. The copy delivered over the bot webhook is not.
+	ParamsResolved bool
+
 	// SystemType is the raw system message type, or "message" for chat messages.
 	SystemType string
 

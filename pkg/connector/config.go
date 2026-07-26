@@ -23,6 +23,10 @@ type Config struct {
 	RelayUnlinkedUsers bool `yaml:"relay_unlinked_users"`
 
 	LoginTimeout time.Duration `yaml:"login_timeout"`
+
+	// SyncInterval is how often bridged conversations are resynced. Zero uses
+	// defaultSyncInterval; a negative value turns the resync off.
+	SyncInterval time.Duration `yaml:"sync_interval"`
 }
 
 // ServerAllowed reports whether users may log into the given host.
@@ -46,6 +50,7 @@ func upgradeConfig(helper configupgrade.Helper) {
 	helper.Copy(configupgrade.List, "allowed_servers")
 	helper.Copy(configupgrade.Bool, "relay_unlinked_users")
 	helper.Copy(configupgrade.Str, "login_timeout")
+	helper.Copy(configupgrade.Str, "sync_interval")
 }
 
 // GetConfig implements bridgev2.NetworkConnector.
