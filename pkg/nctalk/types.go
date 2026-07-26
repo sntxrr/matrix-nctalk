@@ -209,6 +209,28 @@ const (
 	ParamTypeTalkAttachment = "talk-attachment"
 )
 
+// System message types the bridge suppresses, because each one narrates
+// something it already bridges as a first-class event. Left in, they would
+// double every reaction, edit and deletion with a notice describing it.
+const (
+	SystemReaction        = "reaction"
+	SystemReactionDeleted = "reaction_deleted"
+	SystemReactionRevoked = "reaction_revoked"
+	SystemMessageDeleted  = "message_deleted"
+	SystemMessageEdited   = "message_edited"
+)
+
+// IsRedundantSystemMessage reports whether a system message only restates an
+// event the bridge already delivers by other means.
+func IsRedundantSystemMessage(systemType string) bool {
+	switch systemType {
+	case SystemReaction, SystemReactionDeleted, SystemReactionRevoked,
+		SystemMessageDeleted, SystemMessageEdited:
+		return true
+	}
+	return false
+}
+
 // Capabilities is the subset of the Talk capability payload the bridge needs to
 // decide which features to advertise and which endpoints are safe to call.
 type Capabilities struct {

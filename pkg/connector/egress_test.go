@@ -418,9 +418,10 @@ func TestHandleMatrixMessageUnsupportedContent(t *testing.T) {
 	})
 	client := newTestClient(t, serverURL, "alice", Config{})
 
+	// Files take the WebDAV route instead; a location has nowhere to go at all.
 	msg := newTestMatrixMessage(
 		newTestPortal(client.host(), "abc123"),
-		&event.MessageEventContent{MsgType: event.MsgImage, Body: "cat.png"},
+		&event.MessageEventContent{MsgType: event.MsgLocation, Body: "somewhere"},
 	)
 	_, err := client.HandleMatrixMessage(context.Background(), msg)
 	if !errors.Is(err, bridgev2.ErrUnsupportedMessageType) {

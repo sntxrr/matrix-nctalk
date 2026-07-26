@@ -369,6 +369,11 @@ func TestProcessEventRoutesByActivityType(t *testing.T) {
 	join := `{"type":"Join","actor":{"type":"Application","id":"bots/bot-1","name":"Matrix Bridge"},"object":{"type":"Collection","id":"abc123token"}}`
 	system := `{"type":"Activity","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"5","name":"call_started","content":"{\"message\":\"{actor} started a call\",\"parameters\":{}}"},"target":{"type":"Collection","id":"abc123token"}}`
 	unknown := `{"type":"Announce","actor":{"type":"Person","id":"users/alice"},"target":{"type":"Collection","id":"abc123token"}}`
+	// A reaction system message only restates what the reaction events already
+	// deliver, so bridging it would double every reaction with a notice.
+	redundant := `{"type":"Activity","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"6","name":"reaction","content":"{\"message\":\"{actor} reacted\",\"parameters\":{}}"},"target":{"type":"Collection","id":"abc123token"}}`
+	// A file share is an Activity with no system message name at all.
+	fileShare := `{"type":"Activity","actor":{"type":"Person","id":"users/bob"},"object":{"type":"Note","id":"7","name":"","content":"{\"message\":\"{file}\",\"parameters\":{\"file\":{\"type\":\"file\",\"id\":\"9\",\"name\":\"x.txt\",\"path\":\"x.txt\"}}}"},"target":{"type":"Collection","id":"abc123token"}}`
 
 	tests := []struct {
 		name       string
@@ -378,8 +383,9 @@ func TestProcessEventRoutesByActivityType(t *testing.T) {
 		{"create", createFixtureJSON, 1},
 		{"like", like, 1},
 		{"join", join, 1},
-		// System messages are recognised but not yet mapped to Matrix.
-		{"system message", system, 0},
+		{"system message", system, 1},
+		{"redundant system message", redundant, 0},
+		{"file share", fileShare, 1},
 		{"unknown activity", unknown, 0},
 	}
 	for _, tc := range tests {

@@ -206,10 +206,7 @@ func (nc *NCTalkConnector) processEvent(ctx context.Context, pending *pendingEve
 	case nctalk.ActivityLeave:
 		return client.handleBotLeave(ctx, token)
 	case nctalk.ActivityActivity:
-		// System messages (calls, membership changes). Handled in M4; the
-		// membership half is covered by the chat resync below.
-		zerolog.Ctx(ctx).Debug().Msg("Ignoring system message activity")
-		return nil
+		return client.handleActivity(ctx, evt, token, pending.receivedAt)
 	default:
 		zerolog.Ctx(ctx).Debug().Msg("Ignoring unknown activity type")
 		return nil
@@ -277,6 +274,28 @@ func (c *NCTalkClient) handleCreate(ctx context.Context, evt *nctalk.WebhookEven
 	}
 	c.queueMessage(ctx, msg)
 	return nil
+}
+
+// handleActivity bridges an Activity, which Talk uses for two quite different
+// things.
+//
+// A system message — somebody joined, a call started, the topic changed —
+// carries its type in the note's name and becomes an m.notice. A **file share**
+// also arrives as an Activity, with an empty name, because it is an ordinary
+// chat message whose whole body is a rich object; that one is a real message
+// and goes down the same path as any other.
+func (c *NCTalkClient) handleActivity(ctx context.Context, evt *nctalk.WebhookEvent, token string, receivedAt time.Time) error {
+	note, err := evt.Note()
+	if err != nil {
+		return err
+	}
+	if nctalk.IsRedundantSystemMessage(note.Name) {
+		zerolog.Ctx(ctx).Debug().
+			Str("system_message", note.Name).
+			Msg("Ignoring a system message that restates an already bridged event")
+		return nil
+	}
+	return c.handleCreate(ctx, evt, token, receivedAt)
 }
 
 // queueMessage hands a converted Talk message to the bridge.

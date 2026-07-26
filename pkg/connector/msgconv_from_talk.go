@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
@@ -56,6 +57,14 @@ func (m *talkMessage) isSystem() bool {
 
 // convertMessage turns a Talk message into Matrix content.
 func (c *NCTalkClient) convertMessage(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, msg *talkMessage) (*bridgev2.ConvertedMessage, error) {
+	// A shared file is a chat message whose entire body is a rich object, so it
+	// becomes a Matrix media event rather than the text rendering of its name.
+	if part := c.convertFilePart(ctx, portal, intent, msg); part != nil {
+		converted := &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{part}}
+		c.attachReply(converted, msg)
+		return converted, nil
+	}
+
 	plain := renderTalkMessage(msg.Text, msg.Parameters)
 	if strings.TrimSpace(plain) == "" {
 		return nil, fmt.Errorf("message %d has no renderable content", msg.MessageID)
@@ -81,13 +90,67 @@ func (c *NCTalkClient) convertMessage(ctx context.Context, portal *bridgev2.Port
 			Content: &content,
 		}},
 	}
+	c.attachReply(converted, msg)
+	return converted, nil
+}
+
+// attachReply points a converted message at the Talk message it replies to.
+func (c *NCTalkClient) attachReply(converted *bridgev2.ConvertedMessage, msg *talkMessage) {
 	if msg.ReplyToID > 0 {
 		converted.ReplyTo = &networkid.MessageOptionalPartID{
 			MessageID: makeMessageID(c.host(), msg.Token, msg.ReplyToID),
 		}
 	}
-	return converted, nil
 }
+
+// convertFilePart builds the media part for a Talk message that shares a file,
+// or nil when the message shares none.
+//
+// A failure to move the file is deliberately not fatal: it returns nil so the
+// caller falls back to the text rendering, which at least names the file. A
+// message that arrived is worth showing imperfectly rather than dropping.
+func (c *NCTalkClient) convertFilePart(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, msg *talkMessage) *bridgev2.ConvertedMessagePart {
+	if msg.isSystem() || intent == nil {
+		return nil
+	}
+	key := fileParamKey(msg.Parameters)
+	if key == "" {
+		return nil
+	}
+
+	// Whatever text surrounds the file placeholder is the caption Talk stored
+	// with the share.
+	caption := strings.TrimSpace(renderTalkMessage(msg.Text, omitParam(msg.Parameters, key)))
+
+	part, err := c.convertFileFromTalk(ctx, portal, intent, msg, msg.Parameters[key], caption)
+	if err != nil {
+		zerolog.Ctx(ctx).Warn().Err(err).
+			Int64("talk_message_id", msg.MessageID).
+			Msg("Could not bridge the shared file, falling back to its name as text")
+		return nil
+	}
+	return part
+}
+
+// omitParam returns the parameter map with one key rendered as nothing, which
+// is how the file placeholder is removed to leave just the caption.
+func omitParam(params map[string]nctalk.MessageParam, key string) map[string]nctalk.MessageParam {
+	out := make(map[string]nctalk.MessageParam, len(params))
+	for k, v := range params {
+		if k == key {
+			// A blank rich object renders as the empty string rather than being
+			// left as a literal "{file}" by the unknown-placeholder path.
+			out[k] = nctalk.MessageParam{Type: paramTypeOmitted}
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// paramTypeOmitted marks a placeholder that should render as nothing. It is not
+// a Talk type; Talk never sends an empty one.
+const paramTypeOmitted = "\x00omitted"
 
 // renderTalkMessage substitutes Talk's Rich Object String placeholders.
 //
@@ -132,10 +195,14 @@ func renderTalkMessage(text string, params map[string]nctalk.MessageParam) strin
 
 // renderParam renders a single rich object as plain text.
 //
-// Media and interactive objects are handled properly in later milestones; for
-// now every object type degrades to something readable rather than vanishing.
+// Files become real Matrix media before this is reached, so the file case here
+// is the fallback for a share that could not be moved. Polls, deck cards and
+// the rest have no Matrix equivalent, and degrade to something readable rather
+// than vanishing from the message.
 func renderParam(p nctalk.MessageParam) string {
 	switch p.Type {
+	case paramTypeOmitted:
+		return ""
 	case nctalk.ParamTypeUser, nctalk.ParamTypeGuest, nctalk.ParamTypeFederatedUser:
 		if p.Name != "" {
 			return p.Name

@@ -46,6 +46,9 @@ type NCTalkClient struct {
 	// mxidParser overrides how mention pills are resolved to Talk actors. It is
 	// nil in production, where the bridge's Matrix connector is used.
 	mxidParser ghostParser
+	// downloader overrides where outgoing media is fetched from. It is nil in
+	// production, where the bridge bot is used.
+	downloader mediaDownloader
 }
 
 var _ bridgev2.NetworkAPI = (*NCTalkClient)(nil)
@@ -380,7 +383,40 @@ func (c *NCTalkClient) GetCapabilities(ctx context.Context, portal *bridgev2.Por
 	if caps.Has(nctalk.CapThreads) {
 		feats.Thread = supported
 	}
+	if caps.AttachmentsAllowed() {
+		feats.File = talkFileFeatures()
+	}
 	return feats
+}
+
+// talkFileFeatures describes what the bridge will carry into Talk.
+//
+// Nextcloud stores whatever it is given, so no MIME type is refused; the only
+// real ceiling is what the bridge is willing to hold in memory. Every kind of
+// file takes the same route — upload to the user's files, share into the
+// conversation — so they all get the same entry.
+func talkFileFeatures() event.FileFeatureMap {
+	file := &event.FileFeatures{
+		MimeTypes: map[string]event.CapabilitySupportLevel{
+			"*/*": event.CapLevelFullySupported,
+		},
+		// Talk carries a caption on the share itself, so it survives as one
+		// message rather than being split into a file plus a comment.
+		Caption:          event.CapLevelFullySupported,
+		MaxCaptionLength: nctalk.MaxChatLength,
+		MaxSize:          maxMediaSize,
+	}
+	return event.FileFeatureMap{
+		event.MsgImage: file,
+		event.MsgVideo: file,
+		event.MsgAudio: file,
+		event.MsgFile:  file,
+		// Talk has its own voice message type the bridge does not produce, so a
+		// Matrix voice note lands as an ordinary audio attachment. That is worth
+		// accepting rather than rejecting the message.
+		event.CapMsgVoice: file,
+		event.CapMsgGIF:   file,
+	}
 }
 
 // HandleMatrixMessage implements bridgev2.NetworkAPI.
@@ -396,6 +432,12 @@ func (c *NCTalkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 	}
 	if host != c.host() {
 		return nil, fmt.Errorf("portal %s belongs to a different Nextcloud server", msg.Portal.ID)
+	}
+
+	// A file goes through WebDAV and a conversation share rather than the chat
+	// endpoint, so it diverges before any text conversion.
+	if msg.Content != nil && isMediaMsgType(msg.Content.MsgType) {
+		return c.handleMatrixMedia(ctx, host, token, msg)
 	}
 
 	out, err := c.convertToTalk(ctx, token, msg)

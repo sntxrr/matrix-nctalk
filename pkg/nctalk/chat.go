@@ -129,6 +129,68 @@ func chatMessagePath(token string, messageID int64) string {
 	return fmt.Sprintf("%s/api/v1/chat/%s/%d", SpreedAPI, url.PathEscape(token), messageID)
 }
 
+// GetMessage returns a single message as the authenticated user sees it.
+//
+// This matters for rich objects: a file's `path` is resolved relative to
+// whoever is asking, and the copy delivered over the bot webhook is resolved
+// for nobody in particular, so it cannot be used to fetch the file.
+func (c *Client) GetMessage(ctx context.Context, token string, messageID int64) (*Message, error) {
+	var out []Message
+	_, err := c.requestJSON(ctx, http.MethodGet,
+		chatMessagePath(token, messageID)+"/context",
+		url.Values{"limit": {"1"}}, nil, &out)
+	if err != nil {
+		return nil, fmt.Errorf("get message %d in %s: %w", messageID, token, err)
+	}
+	for i := range out {
+		if out[i].ID == messageID {
+			return &out[i], nil
+		}
+	}
+	return nil, fmt.Errorf("get message %d in %s: not in the returned context", messageID, token)
+}
+
+// ListMessages returns recent messages in a conversation, newest first.
+func (c *Client) ListMessages(ctx context.Context, token string, limit int) ([]Message, error) {
+	var out []Message
+	_, err := c.requestJSON(ctx, http.MethodGet,
+		SpreedAPI+"/api/v1/chat/"+url.PathEscape(token),
+		url.Values{
+			"lookIntoFuture": {"0"},
+			"limit":          {strconv.Itoa(limit)},
+		}, nil, &out)
+	if err != nil {
+		return nil, fmt.Errorf("list messages in %s: %w", token, err)
+	}
+	return out, nil
+}
+
+// FindMessageByReference locates a recently sent message by the reference the
+// client gave it.
+//
+// Some ways of posting — sharing a file, above all — create a chat message
+// without reporting its ID. The reference is stored on the message, so a short
+// look back over recent history recovers it.
+func (c *Client) FindMessageByReference(ctx context.Context, token, referenceID string, limit int) (*Message, error) {
+	if referenceID == "" {
+		return nil, fmt.Errorf("no reference to look up")
+	}
+	if len(referenceID) > maxReferenceIDLength {
+		// Talk truncated it on the way in, so search for what it actually stored.
+		referenceID = referenceID[:maxReferenceIDLength]
+	}
+	messages, err := c.ListMessages(ctx, token, limit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range messages {
+		if messages[i].ReferenceID == referenceID {
+			return &messages[i], nil
+		}
+	}
+	return nil, fmt.Errorf("no message in %s carries reference %q", token, referenceID)
+}
+
 // IsBadRequest reports whether err is an OCS 400. Talk uses it for a message it
 // understood but would not accept, such as a reply to a message that is not a
 // valid parent, which the bridge retries without the reply relation.

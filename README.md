@@ -10,7 +10,7 @@ This is a double-puppeting bridge instead:
 - Matrix users post into Talk **as their own Nextcloud account**, not as a relay bot.
 - Ingress uses Talk's **bot webhook API**, so messages are pushed rather than polled.
 
-> **Status: early development.** Text messages bridge both ways, with replies, mentions and formatting. Reactions currently only travel Talk → Matrix, and files are not bridged at all — see [Status](#status).
+> **Status: early development.** Messages, files, reactions, edits, deletions and read receipts bridge both ways, with replies, mentions and formatting. History is not backfilled yet, and there is no Docker image — see [Status](#status).
 
 ## Requirements
 
@@ -103,6 +103,7 @@ Everything in the dev stack uses fixed throwaway credentials and is bound to loc
 |---|---|
 | Talk → Matrix | Talk POSTs Activity Streams 2.0 events to `/_nctalk/webhook`, signed with HMAC-SHA256. The bridge verifies, enqueues, and acks immediately — Talk allows only 5 seconds and disables bots that fail repeatedly. |
 | Matrix → Talk | OCS chat API using the sender's own app password, so messages are attributed to the real Nextcloud user. Matrix users with no linked account are rejected, or relayed via the bot if `relay_unlinked_users` is on. |
+| Files | WebDAV against the user's own files, then an OCS share into the conversation. Both directions move the bytes through the bridge; nothing is hotlinked, so Matrix clients need no Nextcloud credentials. |
 
 Conversations become **shared portals**: a Talk conversation token is global to the server and both sides of a one-to-one see the same token, so every bridged user of a conversation lands in the same Matrix room.
 
@@ -123,6 +124,16 @@ Talk's `Like` and `Undo` activities carry the **author of the message being reac
 
 So a reaction activity is treated only as a signal that something changed: the bridge fetches `GET /ocs/v2.php/apps/spreed/api/v1/reaction/{token}/{messageId}` and syncs the whole set. That also covers removals, which Talk reports the same way, and it means the bridge's own reactions reconcile against the rows it already wrote instead of echoing back as duplicates.
 
+### Files arrive as something other than a message
+
+A file shared into a conversation reaches the bot as an **`Activity`**, not a `Create`, with an **empty** system message name — a real chat message whose whole body is a `{file}` rich object. Genuine system messages are also `Activity`, but always name their type, so the empty name is what tells the two apart. Route `Activity` to the system-message handler alone and every file silently disappears.
+
+The `file` object in that payload cannot be used to fetch the file. Its `path` is resolved for nobody in particular — a file the sender keeps in their own Talk folder arrives as a bare `note.txt` — whereas the chat API resolves it per requester (`Talk/note.txt` for everyone who can see it). The bridge therefore re-reads the message with `GET /chat/{token}/{messageId}/context?limit=1` as the logged-in user and downloads over WebDAV using that path.
+
+Going the other way, a file is a WebDAV `PUT` into the user's attachment folder followed by an OCS share with `shareType=10`. The share reports its own ID but not the chat message's, so the bridge passes a `referenceId` — which Talk does store on the message — and looks the message up by it afterwards. Without that, every file sent from Matrix would come back over the webhook and be bridged a second time.
+
+Also note that `PUT` overwrites silently, so a name already in use has to be found with `HEAD` and stepped around before uploading, not discovered afterwards.
+
 ## Status
 
 | Milestone | State |
@@ -131,7 +142,7 @@ So a reaction activity is treated only as a signal that something changed: the b
 | M1 — webhook ingress, portals, ghosts | Done |
 | M2 — egress as the real Nextcloud user | Done |
 | M3 — reactions, edits, redactions, receipts | Done |
-| M4 — files, rich objects, system messages | Not started |
+| M4 — files, rich objects, system messages | Done |
 | M5 — backfill and metadata sync | Not started |
 | M6 — Docker packaging | Not started |
 
