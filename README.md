@@ -180,4 +180,6 @@ pkg/nctalk/           standalone Nextcloud OCS client, no bridge dependencies
 
 ## Licence
 
-Not yet chosen. mautrix-go is AGPL-3.0, which constrains the options for a derived work.
+[GNU AGPL-3.0-or-later](LICENSE), the same licence as [mautrix-go](https://github.com/mautrix/go), which this is built on.
+
+Note what that means for a bridge in particular: AGPL section 13 says that if you run a **modified** version and let other people use it over a network, those users must be offered the source of your version. Running the stock bridge for your own users carries no such obligation.
