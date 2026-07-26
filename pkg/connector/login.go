@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
@@ -57,7 +58,10 @@ type NCTalkLogin struct {
 	serverURL string
 	flowInit  *nctalk.LoginFlowInit
 
-	cancel context.CancelFunc
+	// cancelMu guards cancel, which Wait writes and Cancel reads. The bridge
+	// may cancel a login from a different goroutine than the one waiting.
+	cancelMu sync.Mutex
+	cancel   context.CancelFunc
 }
 
 var (
@@ -87,10 +91,13 @@ func (l *NCTalkLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 // validateServerURL normalises the entered server URL and rejects obvious
 // mistakes before any network call is attempted.
 func validateServerURL(input string) (string, error) {
-	input = strings.TrimSpace(strings.TrimRight(input, "/"))
+	input = strings.TrimSpace(input)
 	if input == "" {
 		return "", fmt.Errorf("server URL is required")
 	}
+	// Add the scheme before trimming anything: trimming trailing slashes first
+	// would turn a bare "https://" into "https:", which then looks like a
+	// schemeless host and gets silently mangled instead of rejected.
 	if !strings.Contains(input, "://") {
 		input = "https://" + input
 	}
@@ -104,7 +111,12 @@ func validateServerURL(input string) (string, error) {
 	if u.Host == "" {
 		return "", fmt.Errorf("server URL must include a hostname")
 	}
-	return strings.TrimRight(u.String(), "/"), nil
+	// Keep only what addresses the server. A pasted URL may carry a query or
+	// fragment, and those would corrupt every path built from this base.
+	u.RawQuery = ""
+	u.Fragment = ""
+	u.Path = strings.TrimRight(u.Path, "/")
+	return u.String(), nil
 }
 
 // SubmitUserInput implements bridgev2.LoginProcessUserInput.
@@ -185,7 +197,9 @@ func (l *NCTalkLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error) {
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, l.Main.loginTimeout())
+	l.cancelMu.Lock()
 	l.cancel = cancel
+	l.cancelMu.Unlock()
 	defer cancel()
 
 	result, err := nctalk.WaitForLogin(ctx, l.Main.HTTP, l.flowInit, 0)
@@ -265,8 +279,11 @@ func (l *NCTalkLogin) finish(ctx context.Context, username, appPassword string) 
 
 // Cancel implements bridgev2.LoginProcess.
 func (l *NCTalkLogin) Cancel() {
-	if l.cancel != nil {
-		l.cancel()
+	l.cancelMu.Lock()
+	cancel := l.cancel
+	l.cancelMu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 

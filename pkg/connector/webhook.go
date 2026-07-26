@@ -50,7 +50,7 @@ func (nc *NCTalkConnector) registerWebhook(ctx context.Context) error {
 		return fmt.Errorf("the Matrix connector does not expose an HTTP server, which is required to receive Talk bot webhooks")
 	}
 
-	nc.router = newLoginRouter(nc)
+	nc.router = newLoginRouter(nc.Bridge)
 	nc.queue = make(chan *pendingEvent, webhookQueueSize)
 	for range webhookWorkers {
 		go nc.processEvents()
@@ -189,7 +189,7 @@ func (nc *NCTalkConnector) processEvent(ctx context.Context, pending *pendingEve
 	case nctalk.ActivityCreate:
 		return client.handleCreate(ctx, evt, token, pending.receivedAt)
 	case nctalk.ActivityLike:
-		return client.handleReaction(ctx, evt, token, pending.receivedAt, true)
+		return client.handleReaction(ctx, evt, token, pending.receivedAt)
 	case nctalk.ActivityUndo:
 		return client.handleUndo(ctx, evt, token, pending.receivedAt)
 	case nctalk.ActivityJoin:
@@ -207,28 +207,30 @@ func (nc *NCTalkConnector) processEvent(ctx context.Context, pending *pendingEve
 	}
 }
 
-// handleCreate bridges a new Talk chat message to Matrix.
-func (c *NCTalkClient) handleCreate(ctx context.Context, evt *nctalk.WebhookEvent, token string, receivedAt time.Time) error {
+// talkMessageFromActivity interprets a Create activity as a chat message.
+//
+// It returns a nil message with no error when the activity is valid but should
+// not be bridged, such as one from an actor type with no Matrix equivalent.
+func talkMessageFromActivity(evt *nctalk.WebhookEvent, token string, receivedAt time.Time) (*talkMessage, error) {
 	note, err := evt.Note()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	messageID, err := note.MessageID()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	actorType, actorID, err := parseTalkActor(evt.Actor.ID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !isBridgeableActor(actorType) {
-		zerolog.Ctx(ctx).Debug().Str("actor_type", actorType).Msg("Ignoring message from unbridgeable actor")
-		return nil
+		return nil, nil
 	}
 
 	content, err := note.DecodeContent()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	msg := &talkMessage{
@@ -244,19 +246,33 @@ func (c *NCTalkClient) handleCreate(ctx context.Context, evt *nctalk.WebhookEven
 		ReceivedAt:  receivedAt,
 		PublishedAt: evt.Timestamp(),
 	}
+	// A malformed parent ID is not worth discarding the whole message over; it
+	// just loses the reply relation.
 	if note.InReplyTo != nil {
 		if parentID, err := note.InReplyTo.Object.MessageID(); err == nil {
 			msg.ReplyToID = parentID
 		}
 	}
+	return msg, nil
+}
 
+// handleCreate bridges a new Talk chat message to Matrix.
+func (c *NCTalkClient) handleCreate(ctx context.Context, evt *nctalk.WebhookEvent, token string, receivedAt time.Time) error {
+	msg, err := talkMessageFromActivity(evt, token, receivedAt)
+	if err != nil {
+		return err
+	}
+	if msg == nil {
+		zerolog.Ctx(ctx).Debug().Str("actor", evt.Actor.ID).Msg("Ignoring message from unbridgeable actor")
+		return nil
+	}
 	c.queueMessage(ctx, msg)
 	return nil
 }
 
 // queueMessage hands a converted Talk message to the bridge.
 func (c *NCTalkClient) queueMessage(ctx context.Context, msg *talkMessage) {
-	c.UserLogin.Bridge.QueueRemoteEvent(c.UserLogin, &simplevent.Message[*talkMessage]{
+	c.events().QueueRemoteEvent(c.UserLogin, &simplevent.Message[*talkMessage]{
 		EventMeta: simplevent.EventMeta{
 			Type:         bridgev2.RemoteEventMessage,
 			PortalKey:    makePortalKey(c.host(), msg.Token),
@@ -276,46 +292,61 @@ func (c *NCTalkClient) queueMessage(ctx context.Context, msg *talkMessage) {
 	})
 }
 
-// handleReaction bridges a reaction added in Talk.
-func (c *NCTalkClient) handleReaction(ctx context.Context, evt *nctalk.WebhookEvent, token string, receivedAt time.Time, _ bool) error {
-	note, err := evt.Note()
+// talkReaction is the bridge's normalised view of a Talk reaction event.
+type talkReaction struct {
+	TargetMessageID int64
+	ActorType       string
+	ActorID         string
+	Emoji           string
+	Timestamp       time.Time
+}
+
+// reactionFromActivity interprets a Like activity, or the Like nested inside an
+// Undo activity, as a reaction.
+//
+// emojiSource is the activity carrying the emoji and actorSource the activity
+// carrying the acting user. For a Like these are the same; for an Undo the
+// emoji comes from the nested Like while the actor comes from the Undo itself.
+func reactionFromActivity(emojiSource, actorSource *nctalk.WebhookEvent, receivedAt time.Time) (*talkReaction, error) {
+	note, err := emojiSource.Note()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	targetID, err := note.MessageID()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	actorType, actorID, err := parseTalkActor(evt.Actor.ID)
+	actorType, actorID, err := parseTalkActor(actorSource.Actor.ID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !isBridgeableActor(actorType) {
-		return nil
+		return nil, nil
 	}
-	if evt.Content == "" {
-		return fmt.Errorf("reaction activity has no emoji")
+	if emojiSource.Content == "" {
+		return nil, fmt.Errorf("reaction activity has no emoji")
 	}
 
-	ts := evt.Timestamp()
+	ts := actorSource.Timestamp()
 	if ts.IsZero() {
 		ts = receivedAt
 	}
+	return &talkReaction{
+		TargetMessageID: targetID,
+		ActorType:       actorType,
+		ActorID:         actorID,
+		Emoji:           emojiSource.Content,
+		Timestamp:       ts,
+	}, nil
+}
 
-	c.UserLogin.Bridge.QueueRemoteEvent(c.UserLogin, &simplevent.Reaction{
-		EventMeta: simplevent.EventMeta{
-			Type:      bridgev2.RemoteEventReaction,
-			PortalKey: makePortalKey(c.host(), token),
-			Sender:    c.eventSender(actorType, actorID),
-			Timestamp: ts,
-			LogContext: func(c zerolog.Context) zerolog.Context {
-				return c.Int64("talk_message_id", targetID).Str("emoji", evt.Content)
-			},
-		},
-		TargetMessage: makeMessageID(c.host(), token, targetID),
-		EmojiID:       makeEmojiID(evt.Content),
-		Emoji:         evt.Content,
-	})
+// handleReaction bridges a reaction added in Talk.
+func (c *NCTalkClient) handleReaction(ctx context.Context, evt *nctalk.WebhookEvent, token string, receivedAt time.Time) error {
+	reaction, err := reactionFromActivity(evt, evt, receivedAt)
+	if err != nil || reaction == nil {
+		return err
+	}
+	c.queueReaction(ctx, token, reaction, bridgev2.RemoteEventReaction)
 	return nil
 }
 
@@ -331,47 +362,33 @@ func (c *NCTalkClient) handleUndo(ctx context.Context, evt *nctalk.WebhookEvent,
 		return nil
 	}
 
-	note, err := like.Note()
-	if err != nil {
+	// The emoji and target come from the nested Like; the acting user comes
+	// from the Undo. Talk only lets you remove your own reaction, so they
+	// agree, but the outer actor is the authoritative one.
+	reaction, err := reactionFromActivity(like, evt, receivedAt)
+	if err != nil || reaction == nil {
 		return err
 	}
-	targetID, err := note.MessageID()
-	if err != nil {
-		return err
-	}
-	// The Undo's own actor is who removed the reaction; the nested Like's actor
-	// is who originally added it. Talk only lets you remove your own, so they
-	// match, but the outer actor is the authoritative one.
-	actorType, actorID, err := parseTalkActor(evt.Actor.ID)
-	if err != nil {
-		return err
-	}
-	if !isBridgeableActor(actorType) {
-		return nil
-	}
-
-	emoji := like.Content
-	if emoji == "" {
-		return fmt.Errorf("undone reaction activity has no emoji")
-	}
-
-	ts := evt.Timestamp()
-	if ts.IsZero() {
-		ts = receivedAt
-	}
-
-	c.UserLogin.Bridge.QueueRemoteEvent(c.UserLogin, &simplevent.Reaction{
-		EventMeta: simplevent.EventMeta{
-			Type:      bridgev2.RemoteEventReactionRemove,
-			PortalKey: makePortalKey(c.host(), token),
-			Sender:    c.eventSender(actorType, actorID),
-			Timestamp: ts,
-		},
-		TargetMessage: makeMessageID(c.host(), token, targetID),
-		EmojiID:       makeEmojiID(emoji),
-		Emoji:         emoji,
-	})
+	c.queueReaction(ctx, token, reaction, bridgev2.RemoteEventReactionRemove)
 	return nil
+}
+
+// queueReaction hands a reaction event to the bridge.
+func (c *NCTalkClient) queueReaction(ctx context.Context, token string, reaction *talkReaction, eventType bridgev2.RemoteEventType) {
+	c.events().QueueRemoteEvent(c.UserLogin, &simplevent.Reaction{
+		EventMeta: simplevent.EventMeta{
+			Type:      eventType,
+			PortalKey: makePortalKey(c.host(), token),
+			Sender:    c.eventSender(reaction.ActorType, reaction.ActorID),
+			Timestamp: reaction.Timestamp,
+			LogContext: func(c zerolog.Context) zerolog.Context {
+				return c.Int64("talk_message_id", reaction.TargetMessageID).Str("emoji", reaction.Emoji)
+			},
+		},
+		TargetMessage: makeMessageID(c.host(), token, reaction.TargetMessageID),
+		EmojiID:       makeEmojiID(reaction.Emoji),
+		Emoji:         reaction.Emoji,
+	})
 }
 
 // handleBotJoin reacts to the bridge bot being enabled in a conversation by
@@ -380,7 +397,7 @@ func (c *NCTalkClient) handleBotJoin(ctx context.Context, token string) error {
 	c.Main.router.Invalidate(c.host(), token)
 
 	zerolog.Ctx(ctx).Info().Str("token", token).Msg("Bridge bot was enabled in a conversation")
-	c.UserLogin.Bridge.QueueRemoteEvent(c.UserLogin, &simplevent.ChatResync{
+	c.events().QueueRemoteEvent(c.UserLogin, &simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
 			Type:         bridgev2.RemoteEventChatResync,
 			PortalKey:    makePortalKey(c.host(), token),

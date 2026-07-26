@@ -13,6 +13,14 @@ import (
 	"github.com/sntxrr/matrix-nextcloud/pkg/nctalk"
 )
 
+// loginLister supplies the set of logins the router may choose between.
+//
+// This is the bridge's cache in production; having it as an interface keeps the
+// router testable without standing up a whole Bridge.
+type loginLister interface {
+	GetAllCachedUserLogins() []*bridgev2.UserLogin
+}
+
 // loginRouter resolves an incoming webhook to the UserLogin that should own the
 // resulting portal.
 //
@@ -22,7 +30,7 @@ import (
 // router picks one participating login deterministically and caches it, which
 // also keeps the portal's owning login stable across restarts.
 type loginRouter struct {
-	main *NCTalkConnector
+	logins loginLister
 
 	mu sync.RWMutex
 	// primary maps "host/token" to the login chosen to own that conversation.
@@ -32,9 +40,9 @@ type loginRouter struct {
 	notParticipant map[string]map[string]bool
 }
 
-func newLoginRouter(main *NCTalkConnector) *loginRouter {
+func newLoginRouter(logins loginLister) *loginRouter {
 	return &loginRouter{
-		main:           main,
+		logins:         logins,
 		primary:        make(map[string]*bridgev2.UserLogin),
 		notParticipant: make(map[string]map[string]bool),
 	}
@@ -105,7 +113,7 @@ func (r *loginRouter) Resolve(ctx context.Context, host, token string) (*bridgev
 
 // candidatesForHost returns all logins belonging to the given Nextcloud host.
 func (r *loginRouter) candidatesForHost(host string) []*bridgev2.UserLogin {
-	all := r.main.Bridge.GetAllCachedUserLogins()
+	all := r.logins.GetAllCachedUserLogins()
 	candidates := make([]*bridgev2.UserLogin, 0, len(all))
 	for _, login := range all {
 		loginHost, _, err := parseUserLoginID(login.ID)

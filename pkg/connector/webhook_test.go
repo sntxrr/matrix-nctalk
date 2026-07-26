@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
@@ -158,3 +159,181 @@ func TestWebhookRejectsShortRandom(t *testing.T) {
 // createFixtureJSON is a single-line Create activity, kept compact so the
 // signature covers exactly the bytes the test sends.
 const createFixtureJSON = `{"type":"Create","actor":{"type":"Person","id":"users/alice","name":"Alice Example"},"object":{"type":"Note","id":"4711","name":"message","content":"{\"message\":\"hello\",\"parameters\":{}}","mediaType":"text/markdown"},"target":{"type":"Collection","id":"abc123token","name":"Project chat"},"published":"2026-07-26T12:00:00+00:00"}`
+
+func TestTalkMessageFromActivity(t *testing.T) {
+	evt, err := nctalk.ParseWebhookEvent([]byte(createFixtureJSON))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	received := time.Date(2026, 7, 26, 13, 0, 0, 0, time.UTC)
+
+	msg, err := talkMessageFromActivity(evt, "abc123token", received)
+	if err != nil {
+		t.Fatalf("build failed: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("expected a message")
+	}
+	if msg.MessageID != 4711 || msg.Token != "abc123token" {
+		t.Errorf("id/token = %d/%q", msg.MessageID, msg.Token)
+	}
+	if msg.ActorType != "users" || msg.ActorID != "alice" {
+		t.Errorf("actor = %s/%s", msg.ActorType, msg.ActorID)
+	}
+	if msg.Text != "hello" || !msg.IsMarkdown {
+		t.Errorf("text = %q markdown = %v", msg.Text, msg.IsMarkdown)
+	}
+	// The published time wins over the receive time when Talk supplies it.
+	if !msg.timestamp().Equal(time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)) {
+		t.Errorf("timestamp = %v, want the published time", msg.timestamp())
+	}
+}
+
+func TestTalkMessageFallsBackToReceiveTime(t *testing.T) {
+	body := `{"type":"Create","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"1","name":"message","content":"{\"message\":\"hi\",\"parameters\":{}}"},"target":{"type":"Collection","id":"abc123token"}}`
+	evt, err := nctalk.ParseWebhookEvent([]byte(body))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	received := time.Date(2026, 7, 26, 13, 0, 0, 0, time.UTC)
+
+	msg, err := talkMessageFromActivity(evt, "abc123token", received)
+	if err != nil || msg == nil {
+		t.Fatalf("build failed: %v", err)
+	}
+	if !msg.timestamp().Equal(received) {
+		t.Errorf("timestamp = %v, want the receive time", msg.timestamp())
+	}
+}
+
+// Actor types with no Matrix equivalent yield no message and no error, so they
+// are skipped rather than logged as failures.
+func TestTalkMessageSkipsUnbridgeableActor(t *testing.T) {
+	body := `{"type":"Create","actor":{"type":"Person","id":"circles/circle1"},"object":{"type":"Note","id":"1","name":"message","content":"{\"message\":\"hi\",\"parameters\":{}}"},"target":{"type":"Collection","id":"abc123token"}}`
+	evt, _ := nctalk.ParseWebhookEvent([]byte(body))
+
+	msg, err := talkMessageFromActivity(evt, "abc123token", time.Now())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if msg != nil {
+		t.Error("an unbridgeable actor should produce no message")
+	}
+}
+
+func TestTalkMessageCarriesReply(t *testing.T) {
+	body := `{"type":"Create","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"4712","name":"message","content":"{\"message\":\"agreed\",\"parameters\":{}}","inReplyTo":{"type":"Note","actor":{"type":"Person","id":"users/bob"},"object":{"type":"Note","id":"4711","name":"message","content":"{\"message\":\"hi\",\"parameters\":{}}"}}},"target":{"type":"Collection","id":"abc123token"}}`
+	evt, _ := nctalk.ParseWebhookEvent([]byte(body))
+
+	msg, err := talkMessageFromActivity(evt, "abc123token", time.Now())
+	if err != nil || msg == nil {
+		t.Fatalf("build failed: %v", err)
+	}
+	if msg.ReplyToID != 4711 {
+		t.Errorf("ReplyToID = %d, want 4711", msg.ReplyToID)
+	}
+}
+
+// A malformed parent ID should cost only the reply relation, not the message.
+func TestTalkMessageToleratesBadReplyID(t *testing.T) {
+	body := `{"type":"Create","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"4712","name":"message","content":"{\"message\":\"agreed\",\"parameters\":{}}","inReplyTo":{"type":"Note","actor":{"type":"Person","id":"users/bob"},"object":{"type":"Note","id":"not-a-number","name":"message","content":"{}"}}},"target":{"type":"Collection","id":"abc123token"}}`
+	evt, _ := nctalk.ParseWebhookEvent([]byte(body))
+
+	msg, err := talkMessageFromActivity(evt, "abc123token", time.Now())
+	if err != nil {
+		t.Fatalf("a malformed parent ID should not fail the message: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("expected a message")
+	}
+	if msg.ReplyToID != 0 {
+		t.Errorf("ReplyToID = %d, want 0", msg.ReplyToID)
+	}
+}
+
+func TestTalkMessageRejectsMalformedActivity(t *testing.T) {
+	cases := map[string]string{
+		"non-numeric message ID": `{"type":"Create","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"abc","name":"message","content":"{}"},"target":{"type":"Collection","id":"t"}}`,
+		"malformed actor":        `{"type":"Create","actor":{"type":"Person","id":"noslash"},"object":{"type":"Note","id":"1","name":"message","content":"{}"},"target":{"type":"Collection","id":"t"}}`,
+		"bad nested content":     `{"type":"Create","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"1","name":"message","content":"not json"},"target":{"type":"Collection","id":"t"}}`,
+	}
+	for name, body := range cases {
+		evt, err := nctalk.ParseWebhookEvent([]byte(body))
+		if err != nil {
+			t.Fatalf("%s: fixture failed to parse: %v", name, err)
+		}
+		if _, err := talkMessageFromActivity(evt, "t", time.Now()); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+func TestReactionFromLikeActivity(t *testing.T) {
+	body := `{"type":"Like","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"target":{"type":"Collection","id":"abc123token"},"content":"👍"}`
+	evt, _ := nctalk.ParseWebhookEvent([]byte(body))
+	received := time.Date(2026, 7, 26, 13, 0, 0, 0, time.UTC)
+
+	reaction, err := reactionFromActivity(evt, evt, received)
+	if err != nil || reaction == nil {
+		t.Fatalf("build failed: %v", err)
+	}
+	if reaction.TargetMessageID != 4711 {
+		t.Errorf("target = %d", reaction.TargetMessageID)
+	}
+	if reaction.Emoji != "👍" {
+		t.Errorf("emoji = %q", reaction.Emoji)
+	}
+	if reaction.ActorID != "alice" {
+		t.Errorf("actor = %q", reaction.ActorID)
+	}
+	if !reaction.Timestamp.Equal(received) {
+		t.Errorf("timestamp = %v, want the receive time", reaction.Timestamp)
+	}
+}
+
+// For an Undo the emoji comes from the nested Like but the acting user comes
+// from the Undo itself, which is the whole reason the builder takes two events.
+func TestReactionFromUndoUsesOuterActor(t *testing.T) {
+	body := `{"type":"Undo","actor":{"type":"Person","id":"users/carol"},"object":{"type":"Like","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"content":"👍"},"target":{"type":"Collection","id":"abc123token"}}`
+	evt, _ := nctalk.ParseWebhookEvent([]byte(body))
+	like, err := evt.UndoneLike()
+	if err != nil {
+		t.Fatalf("undo decode failed: %v", err)
+	}
+
+	reaction, err := reactionFromActivity(like, evt, time.Now())
+	if err != nil || reaction == nil {
+		t.Fatalf("build failed: %v", err)
+	}
+	if reaction.ActorID != "carol" {
+		t.Errorf("actor = %q, want the Undo's actor", reaction.ActorID)
+	}
+	if reaction.Emoji != "👍" {
+		t.Errorf("emoji = %q, want the nested Like's emoji", reaction.Emoji)
+	}
+	if reaction.TargetMessageID != 4711 {
+		t.Errorf("target = %d", reaction.TargetMessageID)
+	}
+}
+
+func TestReactionRejectsMissingEmoji(t *testing.T) {
+	body := `{"type":"Like","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"target":{"type":"Collection","id":"abc123token"}}`
+	evt, _ := nctalk.ParseWebhookEvent([]byte(body))
+
+	if _, err := reactionFromActivity(evt, evt, time.Now()); err == nil {
+		t.Fatal("expected an error when the activity carries no emoji")
+	}
+}
+
+func TestReactionSkipsUnbridgeableActor(t *testing.T) {
+	body := `{"type":"Like","actor":{"type":"Person","id":"circles/c1"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"target":{"type":"Collection","id":"abc123token"},"content":"x"}`
+	evt, _ := nctalk.ParseWebhookEvent([]byte(body))
+
+	reaction, err := reactionFromActivity(evt, evt, time.Now())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reaction != nil {
+		t.Error("an unbridgeable actor should produce no reaction")
+	}
+}

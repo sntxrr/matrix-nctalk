@@ -1,7 +1,11 @@
 package connector
 
 import (
+	"context"
+	"strings"
 	"testing"
+
+	"maunium.net/go/mautrix/event"
 
 	"github.com/sntxrr/matrix-nextcloud/pkg/nctalk"
 )
@@ -158,6 +162,107 @@ func TestBackendHost(t *testing.T) {
 		}
 		if got != tc.want {
 			t.Errorf("backendHost(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestConvertMessagePlainText(t *testing.T) {
+	client := newTestClient(t, "https://cloud.example.com", "alice", Config{})
+	msg := &talkMessage{Token: "abc123", MessageID: 1, Text: "hello there", SystemType: "message"}
+
+	converted, err := client.convertMessage(context.Background(), nil, nil, msg)
+	if err != nil {
+		t.Fatalf("convertMessage failed: %v", err)
+	}
+	if len(converted.Parts) != 1 {
+		t.Fatalf("got %d parts, want 1", len(converted.Parts))
+	}
+	content := converted.Parts[0].Content
+	if content.MsgType != event.MsgText {
+		t.Errorf("msgtype = %q, want m.text", content.MsgType)
+	}
+	if content.Body != "hello there" {
+		t.Errorf("body = %q", content.Body)
+	}
+	if content.FormattedBody != "" {
+		t.Error("plain text should not produce a formatted body")
+	}
+}
+
+func TestConvertMessageRendersMarkdown(t *testing.T) {
+	client := newTestClient(t, "https://cloud.example.com", "alice", Config{})
+	msg := &talkMessage{Token: "abc123", MessageID: 1, Text: "this is **bold**", IsMarkdown: true, SystemType: "message"}
+
+	converted, err := client.convertMessage(context.Background(), nil, nil, msg)
+	if err != nil {
+		t.Fatalf("convertMessage failed: %v", err)
+	}
+	content := converted.Parts[0].Content
+	if !strings.Contains(content.FormattedBody, "<strong>bold</strong>") {
+		t.Errorf("markdown was not rendered: %q", content.FormattedBody)
+	}
+}
+
+func TestConvertMessageSubstitutesParameters(t *testing.T) {
+	client := newTestClient(t, "https://cloud.example.com", "alice", Config{})
+	msg := &talkMessage{
+		Token: "abc123", MessageID: 1, SystemType: "message",
+		Text: "hello {mention-user1}",
+		Parameters: map[string]nctalk.MessageParam{
+			"mention-user1": {Type: "user", ID: "bob", Name: "Bob Example"},
+		},
+	}
+
+	converted, err := client.convertMessage(context.Background(), nil, nil, msg)
+	if err != nil {
+		t.Fatalf("convertMessage failed: %v", err)
+	}
+	if converted.Parts[0].Content.Body != "hello Bob Example" {
+		t.Errorf("body = %q", converted.Parts[0].Content.Body)
+	}
+}
+
+func TestConvertMessageMarksSystemMessagesAsNotice(t *testing.T) {
+	client := newTestClient(t, "https://cloud.example.com", "alice", Config{})
+	msg := &talkMessage{
+		Token: "abc123", MessageID: 1, SystemType: "call_started",
+		Text:       "{actor} started a call",
+		Parameters: map[string]nctalk.MessageParam{"actor": {Type: "user", Name: "Alice"}},
+	}
+
+	converted, err := client.convertMessage(context.Background(), nil, nil, msg)
+	if err != nil {
+		t.Fatalf("convertMessage failed: %v", err)
+	}
+	if converted.Parts[0].Content.MsgType != event.MsgNotice {
+		t.Errorf("msgtype = %q, want m.notice for a system message", converted.Parts[0].Content.MsgType)
+	}
+}
+
+func TestConvertMessageCarriesReply(t *testing.T) {
+	client := newTestClient(t, "https://cloud.example.com", "alice", Config{})
+	msg := &talkMessage{Token: "abc123", MessageID: 2, Text: "agreed", ReplyToID: 4711, SystemType: "message"}
+
+	converted, err := client.convertMessage(context.Background(), nil, nil, msg)
+	if err != nil {
+		t.Fatalf("convertMessage failed: %v", err)
+	}
+	if converted.ReplyTo == nil {
+		t.Fatal("expected a reply relation")
+	}
+	want := makeMessageID(client.host(), "abc123", 4711)
+	if converted.ReplyTo.MessageID != want {
+		t.Errorf("reply target = %q, want %q", converted.ReplyTo.MessageID, want)
+	}
+}
+
+func TestConvertMessageRejectsEmptyContent(t *testing.T) {
+	client := newTestClient(t, "https://cloud.example.com", "alice", Config{})
+
+	for _, text := range []string{"", "   ", "\n\t"} {
+		msg := &talkMessage{Token: "abc123", MessageID: 1, Text: text, SystemType: "message"}
+		if _, err := client.convertMessage(context.Background(), nil, nil, msg); err == nil {
+			t.Errorf("expected an error for text %q", text)
 		}
 	}
 }

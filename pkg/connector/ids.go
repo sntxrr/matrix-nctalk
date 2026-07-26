@@ -10,18 +10,28 @@ import (
 	"github.com/sntxrr/matrix-nextcloud/pkg/nctalk"
 )
 
+// idSep joins the fields of a network ID.
+const idSep = "|"
+
 // Network IDs are all prefixed with the Nextcloud host so that one bridge can
 // serve several Nextcloud servers without collisions. Talk conversation tokens
 // and message IDs are only unique within a single server.
+//
+// Fields are joined with idSep rather than a colon because the host routinely
+// contains colons: "cloud.example.com:8443" for a non-standard port, and
+// "[::1]:8443" for an IPv6 literal. Splitting such an ID on ":" silently yields
+// the wrong host. A pipe cannot appear in a hostname or port, so it separates
+// unambiguously. Splits are always taken from the left with a field limit, so
+// the trailing field may itself contain the separator.
 
 // makeUserLoginID builds the ID for a logged-in Nextcloud account.
 func makeUserLoginID(host, ncUserID string) networkid.UserLoginID {
-	return networkid.UserLoginID(host + ":" + ncUserID)
+	return networkid.UserLoginID(host + idSep + ncUserID)
 }
 
 // parseUserLoginID splits a login ID back into its host and Nextcloud user ID.
 func parseUserLoginID(id networkid.UserLoginID) (host, ncUserID string, err error) {
-	host, ncUserID, found := strings.Cut(string(id), ":")
+	host, ncUserID, found := strings.Cut(string(id), idSep)
 	if !found || host == "" || ncUserID == "" {
 		return "", "", fmt.Errorf("malformed user login ID %q", id)
 	}
@@ -32,12 +42,12 @@ func parseUserLoginID(id networkid.UserLoginID) (host, ncUserID string, err erro
 // because Talk distinguishes users, guests, bots and federated users, and the
 // same actor ID can exist under different types.
 func makeUserID(host, actorType, actorID string) networkid.UserID {
-	return networkid.UserID(host + ":" + actorType + ":" + actorID)
+	return networkid.UserID(host + idSep + actorType + idSep + actorID)
 }
 
 // parseUserID splits a ghost ID into host, actor type and actor ID.
 func parseUserID(id networkid.UserID) (host, actorType, actorID string, err error) {
-	parts := strings.SplitN(string(id), ":", 3)
+	parts := strings.SplitN(string(id), idSep, 3)
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return "", "", "", fmt.Errorf("malformed user ID %q", id)
 	}
@@ -46,12 +56,12 @@ func parseUserID(id networkid.UserID) (host, actorType, actorID string, err erro
 
 // makePortalID builds the portal ID for a Talk conversation.
 func makePortalID(host, token string) networkid.PortalID {
-	return networkid.PortalID(host + ":" + token)
+	return networkid.PortalID(host + idSep + token)
 }
 
 // parsePortalID splits a portal ID into host and conversation token.
 func parsePortalID(id networkid.PortalID) (host, token string, err error) {
-	host, token, found := strings.Cut(string(id), ":")
+	host, token, found := strings.Cut(string(id), idSep)
 	if !found || host == "" || token == "" {
 		return "", "", fmt.Errorf("malformed portal ID %q", id)
 	}
@@ -70,13 +80,13 @@ func makePortalKey(host, token string) networkid.PortalKey {
 
 // makeMessageID builds the message ID for a Talk chat message.
 func makeMessageID(host, token string, messageID int64) networkid.MessageID {
-	return networkid.MessageID(fmt.Sprintf("%s:%s:%d", host, token, messageID))
+	return networkid.MessageID(fmt.Sprintf("%s%s%s%s%d", host, idSep, token, idSep, messageID))
 }
 
 // parseMessageID splits a message ID into host, conversation token and the
 // numeric Talk message ID.
 func parseMessageID(id networkid.MessageID) (host, token string, messageID int64, err error) {
-	parts := strings.SplitN(string(id), ":", 3)
+	parts := strings.SplitN(string(id), idSep, 3)
 	if len(parts) != 3 {
 		return "", "", 0, fmt.Errorf("malformed message ID %q", id)
 	}

@@ -4,9 +4,6 @@ import "testing"
 
 func TestUserLoginIDRoundTrip(t *testing.T) {
 	id := makeUserLoginID("cloud.example.com", "alice")
-	if id != "cloud.example.com:alice" {
-		t.Fatalf("unexpected login ID %q", id)
-	}
 	host, user, err := parseUserLoginID(id)
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
@@ -66,13 +63,13 @@ func TestParseMalformedIDsError(t *testing.T) {
 	if _, _, err := parseUserLoginID("nocolon"); err == nil {
 		t.Error("expected error for login ID without separator")
 	}
-	if _, _, _, err := parseUserID("only:two"); err == nil {
+	if _, _, _, err := parseUserID("only|two"); err == nil {
 		t.Error("expected error for user ID with too few parts")
 	}
-	if _, _, err := parsePortalID(":emptyhost"); err == nil {
+	if _, _, err := parsePortalID("|emptyhost"); err == nil {
 		t.Error("expected error for portal ID with empty host")
 	}
-	if _, _, _, err := parseMessageID("host:token:notanumber"); err == nil {
+	if _, _, _, err := parseMessageID("host|token|notanumber"); err == nil {
 		t.Error("expected error for non-numeric message ID")
 	}
 }
@@ -125,5 +122,57 @@ func TestServerAllowed(t *testing.T) {
 	}
 	if restricted.ServerAllowed("evil.example.net") {
 		t.Error("unlisted server allowed")
+	}
+}
+
+// A Nextcloud reachable on a non-standard port, or over IPv6, puts colons in the
+// host. Splitting IDs on a colon silently yields the wrong host, so every ID
+// type must survive these.
+func TestIDsRoundTripWithColonsInHost(t *testing.T) {
+	hosts := []string{
+		"cloud.example.com",
+		"cloud.example.com:8443",
+		"localhost:8080",
+		"[::1]:8443",
+		"[2001:db8::1]:443",
+	}
+	for _, host := range hosts {
+		t.Run(host, func(t *testing.T) {
+			gotHost, gotUser, err := parseUserLoginID(makeUserLoginID(host, "alice"))
+			if err != nil || gotHost != host || gotUser != "alice" {
+				t.Errorf("login ID: host=%q user=%q err=%v", gotHost, gotUser, err)
+			}
+
+			gotHost, actorType, actorID, err := parseUserID(makeUserID(host, "users", "alice"))
+			if err != nil || gotHost != host || actorType != "users" || actorID != "alice" {
+				t.Errorf("user ID: host=%q type=%q id=%q err=%v", gotHost, actorType, actorID, err)
+			}
+
+			gotHost, token, err := parsePortalID(makePortalID(host, "abc123"))
+			if err != nil || gotHost != host || token != "abc123" {
+				t.Errorf("portal ID: host=%q token=%q err=%v", gotHost, token, err)
+			}
+
+			gotHost, token, msgID, err := parseMessageID(makeMessageID(host, "abc123", 4711))
+			if err != nil || gotHost != host || token != "abc123" || msgID != 4711 {
+				t.Errorf("message ID: host=%q token=%q id=%d err=%v", gotHost, token, msgID, err)
+			}
+		})
+	}
+}
+
+// Nextcloud user IDs are permissive, so the trailing free-form field must
+// survive even if it contains the separator itself.
+func TestIDsRoundTripWithSeparatorInUserID(t *testing.T) {
+	odd := "weird|user"
+
+	host, user, err := parseUserLoginID(makeUserLoginID("cloud.example.com", odd))
+	if err != nil || host != "cloud.example.com" || user != odd {
+		t.Errorf("login ID: host=%q user=%q err=%v", host, user, err)
+	}
+
+	host, actorType, actorID, err := parseUserID(makeUserID("cloud.example.com", "users", odd))
+	if err != nil || host != "cloud.example.com" || actorType != "users" || actorID != odd {
+		t.Errorf("user ID: host=%q type=%q id=%q err=%v", host, actorType, actorID, err)
 	}
 }

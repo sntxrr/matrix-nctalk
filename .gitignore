@@ -11,3 +11,6 @@
 
 # The generated example config is safe to commit; the real one is not.
 !/example-config.yaml
+
+# Coverage output
+/coverage.out

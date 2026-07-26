@@ -41,9 +41,26 @@ type NCTalkClient struct {
 
 	// caps caches the server's Talk capabilities, refreshed on Connect.
 	caps *nctalk.Capabilities
+
+	// queuer overrides where remote events are sent. It is nil in production,
+	// where events go to the bridge; tests substitute a recorder.
+	queuer eventQueuer
 }
 
 var _ bridgev2.NetworkAPI = (*NCTalkClient)(nil)
+
+// eventQueuer accepts remote events for the bridge to process.
+type eventQueuer interface {
+	QueueRemoteEvent(login *bridgev2.UserLogin, evt bridgev2.RemoteEvent) bridgev2.EventHandlingResult
+}
+
+// events returns the destination for remote events.
+func (c *NCTalkClient) events() eventQueuer {
+	if c.queuer != nil {
+		return c.queuer
+	}
+	return c.UserLogin.Bridge
+}
 
 func (c *NCTalkClient) meta() *UserLoginMetadata {
 	return c.UserLogin.Metadata.(*UserLoginMetadata)
