@@ -117,6 +117,12 @@ Talk uses the same HMAC primitive each way but signs different data, which is ea
 
 `pkg/nctalk/bot_test.go` pins both.
 
+### Reactions do not say who reacted
+
+Talk's `Like` and `Undo` activities carry the **author of the message being reacted to** in `actor`, not the person reacting, and nothing else in the payload identifies them. Taking `actor` at face value credits every reaction to whoever wrote the message.
+
+So a reaction activity is treated only as a signal that something changed: the bridge fetches `GET /ocs/v2.php/apps/spreed/api/v1/reaction/{token}/{messageId}` and syncs the whole set. That also covers removals, which Talk reports the same way, and it means the bridge's own reactions reconcile against the rows it already wrote instead of echoing back as duplicates.
+
 ## Status
 
 | Milestone | State |
@@ -124,7 +130,7 @@ Talk uses the same HMAC primitive each way but signs different data, which is ea
 | M0 — scaffold, OCS client, login flows | Done |
 | M1 — webhook ingress, portals, ghosts | Done |
 | M2 — egress as the real Nextcloud user | Done |
-| M3 — reactions, edits, redactions, receipts | Not started |
+| M3 — reactions, edits, redactions, receipts | Done |
 | M4 — files, rich objects, system messages | Not started |
 | M5 — backfill and metadata sync | Not started |
 | M6 — Docker packaging | Not started |

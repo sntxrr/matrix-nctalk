@@ -268,72 +268,56 @@ func TestTalkMessageRejectsMalformedActivity(t *testing.T) {
 	}
 }
 
-func TestReactionFromLikeActivity(t *testing.T) {
-	body := `{"type":"Like","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"target":{"type":"Collection","id":"abc123token"},"content":"👍"}`
-	evt, _ := nctalk.ParseWebhookEvent([]byte(body))
-	received := time.Date(2026, 7, 26, 13, 0, 0, 0, time.UTC)
+// Talk's Like activity names the author of the message being reacted to, not
+// the person reacting. Nothing in the payload identifies the reactor, so the
+// activity is only good for the message ID; who reacted has to be asked for.
+// This is the behaviour of a real server, confirmed against Talk 21: bob
+// reacting to alice's message produces `"actor": {"id": "users/alice"}`.
+func TestReactionActivityYieldsOnlyTheMessage(t *testing.T) {
+	body := `{"type":"Like","actor":{"type":"Person","id":"users/alice","name":"Alice"},"object":{"type":"Note","id":"4711","name":"","content":"{\"message\":\"hi\",\"parameters\":[]}"},"target":{"type":"Collection","id":"abc123token"},"content":"👍"}`
+	evt, err := nctalk.ParseWebhookEvent([]byte(body))
+	if err != nil {
+		t.Fatalf("fixture failed to parse: %v", err)
+	}
 
-	reaction, err := reactionFromActivity(evt, evt, received)
-	if err != nil || reaction == nil {
-		t.Fatalf("build failed: %v", err)
+	note, err := evt.Note()
+	if err != nil {
+		t.Fatalf("decode note: %v", err)
 	}
-	if reaction.TargetMessageID != 4711 {
-		t.Errorf("target = %d", reaction.TargetMessageID)
+	id, err := note.MessageID()
+	if err != nil {
+		t.Fatalf("message ID: %v", err)
 	}
-	if reaction.Emoji != "👍" {
-		t.Errorf("emoji = %q", reaction.Emoji)
-	}
-	if reaction.ActorID != "alice" {
-		t.Errorf("actor = %q", reaction.ActorID)
-	}
-	if !reaction.Timestamp.Equal(received) {
-		t.Errorf("timestamp = %v, want the receive time", reaction.Timestamp)
+	if id != 4711 {
+		t.Errorf("message ID = %d, want 4711", id)
 	}
 }
 
-// For an Undo the emoji comes from the nested Like but the acting user comes
-// from the Undo itself, which is the whole reason the builder takes two events.
-func TestReactionFromUndoUsesOuterActor(t *testing.T) {
+// The undone Like carries the message; the Undo wrapping it carries nothing the
+// bridge can use, since neither activity names the reactor either way.
+func TestUndoActivityYieldsTheNestedMessage(t *testing.T) {
 	body := `{"type":"Undo","actor":{"type":"Person","id":"users/carol"},"object":{"type":"Like","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"content":"👍"},"target":{"type":"Collection","id":"abc123token"}}`
-	evt, _ := nctalk.ParseWebhookEvent([]byte(body))
+	evt, err := nctalk.ParseWebhookEvent([]byte(body))
+	if err != nil {
+		t.Fatalf("fixture failed to parse: %v", err)
+	}
+
 	like, err := evt.UndoneLike()
 	if err != nil {
 		t.Fatalf("undo decode failed: %v", err)
 	}
-
-	reaction, err := reactionFromActivity(like, evt, time.Now())
-	if err != nil || reaction == nil {
-		t.Fatalf("build failed: %v", err)
+	if like.Type != nctalk.ActivityLike {
+		t.Fatalf("nested type = %q, want Like", like.Type)
 	}
-	if reaction.ActorID != "carol" {
-		t.Errorf("actor = %q, want the Undo's actor", reaction.ActorID)
-	}
-	if reaction.Emoji != "👍" {
-		t.Errorf("emoji = %q, want the nested Like's emoji", reaction.Emoji)
-	}
-	if reaction.TargetMessageID != 4711 {
-		t.Errorf("target = %d", reaction.TargetMessageID)
-	}
-}
-
-func TestReactionRejectsMissingEmoji(t *testing.T) {
-	body := `{"type":"Like","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"target":{"type":"Collection","id":"abc123token"}}`
-	evt, _ := nctalk.ParseWebhookEvent([]byte(body))
-
-	if _, err := reactionFromActivity(evt, evt, time.Now()); err == nil {
-		t.Fatal("expected an error when the activity carries no emoji")
-	}
-}
-
-func TestReactionSkipsUnbridgeableActor(t *testing.T) {
-	body := `{"type":"Like","actor":{"type":"Person","id":"circles/c1"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"target":{"type":"Collection","id":"abc123token"},"content":"x"}`
-	evt, _ := nctalk.ParseWebhookEvent([]byte(body))
-
-	reaction, err := reactionFromActivity(evt, evt, time.Now())
+	note, err := like.Note()
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("decode nested note: %v", err)
 	}
-	if reaction != nil {
-		t.Error("an unbridgeable actor should produce no reaction")
+	id, err := note.MessageID()
+	if err != nil {
+		t.Fatalf("message ID: %v", err)
+	}
+	if id != 4711 {
+		t.Errorf("message ID = %d, want 4711", id)
 	}
 }

@@ -82,11 +82,65 @@ func (c *Client) SendMessage(ctx context.Context, token string, req SendMessageR
 	return &out, nil
 }
 
+// EditMessage replaces the text of an existing message.
+//
+// Talk only permits this within 24 hours of the message being sent, only for
+// your own messages unless you moderate the conversation, and only when the
+// server advertises the edit-messages capability. It keeps the message ID, so
+// nothing the bridge has recorded about the message changes.
+func (c *Client) EditMessage(ctx context.Context, token string, messageID int64, message string) error {
+	_, err := c.requestJSON(ctx, http.MethodPut, chatMessagePath(token, messageID),
+		nil, url.Values{"message": {message}}, nil)
+	if err != nil {
+		return fmt.Errorf("edit message %d in %s: %w", messageID, token, err)
+	}
+	return nil
+}
+
+// DeleteMessage deletes a message.
+//
+// Talk only permits this within 6 hours, and it does not remove the message so
+// much as replace its text with a "message deleted" placeholder, which is why
+// the response carries a message rather than nothing.
+func (c *Client) DeleteMessage(ctx context.Context, token string, messageID int64) error {
+	_, err := c.requestJSON(ctx, http.MethodDelete, chatMessagePath(token, messageID), nil, nil, nil)
+	if err != nil {
+		return fmt.Errorf("delete message %d in %s: %w", messageID, token, err)
+	}
+	return nil
+}
+
+// SetReadMarker moves the authenticated user's read marker in a conversation.
+//
+// Talk tracks one marker per conversation rather than a receipt per message, so
+// this is the whole of read-status support. Needs the chat-read-status
+// capability.
+func (c *Client) SetReadMarker(ctx context.Context, token string, lastReadMessage int64) error {
+	form := url.Values{"lastReadMessage": {strconv.FormatInt(lastReadMessage, 10)}}
+	_, err := c.requestJSON(ctx, http.MethodPost,
+		SpreedAPI+"/api/v1/chat/"+url.PathEscape(token)+"/read", nil, form, nil)
+	if err != nil {
+		return fmt.Errorf("set read marker in %s: %w", token, err)
+	}
+	return nil
+}
+
+func chatMessagePath(token string, messageID int64) string {
+	return fmt.Sprintf("%s/api/v1/chat/%s/%d", SpreedAPI, url.PathEscape(token), messageID)
+}
+
 // IsBadRequest reports whether err is an OCS 400. Talk uses it for a message it
 // understood but would not accept, such as a reply to a message that is not a
 // valid parent, which the bridge retries without the reply relation.
 func IsBadRequest(err error) bool {
 	return hasStatus(err, http.StatusBadRequest)
+}
+
+// IsMethodNotAllowed reports whether err is an OCS 405, which Talk returns when
+// the target of a delete is not a deletable message — a system message, or one
+// that has already been deleted.
+func IsMethodNotAllowed(err error) bool {
+	return hasStatus(err, http.StatusMethodNotAllowed)
 }
 
 // IsTooLarge reports whether err is an OCS 413, meaning the message exceeded

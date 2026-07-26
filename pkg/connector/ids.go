@@ -96,6 +96,13 @@ func makeRelayedMessageID(host, token, referenceID string) networkid.MessageID {
 	return networkid.MessageID(host + idSep + token + idSep + relayedIDPrefix + referenceID)
 }
 
+// isRelayedMessageID reports whether an ID was minted by makeRelayedMessageID,
+// meaning there is no Talk message ID behind it to hand to the API.
+func isRelayedMessageID(id networkid.MessageID) bool {
+	parts := strings.SplitN(string(id), idSep, 3)
+	return len(parts) == 3 && strings.HasPrefix(parts[2], relayedIDPrefix)
+}
+
 // parseMessageID splits a message ID into host, conversation token and the
 // numeric Talk message ID.
 func parseMessageID(id networkid.MessageID) (host, token string, messageID int64, err error) {

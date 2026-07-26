@@ -333,12 +333,7 @@ func (c *NCTalkClient) eventSender(actorType, actorID string) bridgev2.EventSend
 
 // GetCapabilities implements bridgev2.NetworkAPI.
 func (c *NCTalkClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
-	caps := c.caps
-	if caps == nil {
-		// Fall back to the capability list cached at login time so a portal
-		// opened before the first successful Connect still advertises sanely.
-		caps = &nctalk.Capabilities{Features: c.meta().Features}
-	}
+	caps := c.capabilities()
 
 	supported := event.CapLevelFullySupported
 	unsupported := event.CapLevelUnsupported
@@ -358,8 +353,10 @@ func (c *NCTalkClient) GetCapabilities(ctx context.Context, portal *bridgev2.Por
 			event.FmtOrderedList:   supported,
 			event.FmtUserLink:      supported,
 		},
-		Reply:               supported,
-		ReadReceipts:        caps.Has(nctalk.CapChatReadStatus),
+		Reply:        supported,
+		ReadReceipts: caps.Has(nctalk.CapChatReadStatus),
+		// Talk carries typing state over its signaling channel rather than OCS,
+		// and bots have no way into it at all, so there is nothing to bridge.
 		TypingNotifications: false,
 		Reaction:            unsupported,
 		Edit:                unsupported,
@@ -368,6 +365,8 @@ func (c *NCTalkClient) GetCapabilities(ctx context.Context, portal *bridgev2.Por
 
 	if caps.Has(nctalk.CapReactions) {
 		feats.Reaction = supported
+		// Talk validates that a reaction is a single emoji, so Matrix's custom
+		// image reactions have nowhere to go.
 		feats.CustomEmojiReactions = false
 	}
 	if caps.Has(nctalk.CapEditMessages) {

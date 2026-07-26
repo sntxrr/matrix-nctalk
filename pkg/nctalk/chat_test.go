@@ -216,3 +216,102 @@ func TestSendMessageUnauthorized(t *testing.T) {
 		t.Fatalf("IsUnauthorized(%v) = false", err)
 	}
 }
+
+func TestEditMessage(t *testing.T) {
+	client, last := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeOCS(t, w, map[string]any{"id": 4711, "message": "corrected"})
+	})
+
+	if err := client.EditMessage(context.Background(), "abc123", 4711, "corrected"); err != nil {
+		t.Fatalf("EditMessage: %v", err)
+	}
+	if last.Method != http.MethodPut {
+		t.Errorf("Method = %s, want PUT", last.Method)
+	}
+	if want := SpreedAPI + "/api/v1/chat/abc123/4711"; last.Path != want {
+		t.Errorf("Path = %s, want %s", last.Path, want)
+	}
+	form, err := url.ParseQuery(last.Body)
+	if err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	if form.Get("message") != "corrected" {
+		t.Errorf("message = %q", form.Get("message"))
+	}
+	if !last.HasAuth || last.User != testUser {
+		t.Errorf("expected the login's own credentials, got %q (auth=%v)", last.User, last.HasAuth)
+	}
+}
+
+func TestDeleteMessage(t *testing.T) {
+	client, last := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// Talk answers with the placeholder that replaces the message.
+		writeOCS(t, w, map[string]any{"id": 4712, "systemMessage": "message_deleted"})
+	})
+
+	if err := client.DeleteMessage(context.Background(), "abc123", 4711); err != nil {
+		t.Fatalf("DeleteMessage: %v", err)
+	}
+	if last.Method != http.MethodDelete {
+		t.Errorf("Method = %s, want DELETE", last.Method)
+	}
+	if want := SpreedAPI + "/api/v1/chat/abc123/4711"; last.Path != want {
+		t.Errorf("Path = %s, want %s", last.Path, want)
+	}
+}
+
+// Talk refuses to delete anything that is not a plain message with a 405, which
+// the bridge has to tell apart from a message that is simply missing.
+func TestDeleteMessageNotDeletable(t *testing.T) {
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeOCSError(w, http.StatusMethodNotAllowed, http.StatusMethodNotAllowed, "not a comment")
+	})
+
+	err := client.DeleteMessage(context.Background(), "abc123", 4711)
+	if !IsMethodNotAllowed(err) {
+		t.Fatalf("IsMethodNotAllowed(%v) = false", err)
+	}
+	if IsNotFound(err) {
+		t.Error("a 405 must not read as a missing message")
+	}
+}
+
+func TestSetReadMarker(t *testing.T) {
+	client, last := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeOCS(t, w, map[string]any{"token": "abc123"})
+	})
+
+	if err := client.SetReadMarker(context.Background(), "abc123", 4711); err != nil {
+		t.Fatalf("SetReadMarker: %v", err)
+	}
+	if last.Method != http.MethodPost {
+		t.Errorf("Method = %s, want POST", last.Method)
+	}
+	if want := SpreedAPI + "/api/v1/chat/abc123/read"; last.Path != want {
+		t.Errorf("Path = %s, want %s", last.Path, want)
+	}
+	form, err := url.ParseQuery(last.Body)
+	if err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	if form.Get("lastReadMessage") != "4711" {
+		t.Errorf("lastReadMessage = %q", form.Get("lastReadMessage"))
+	}
+}
+
+func TestModifyErrorsPropagate(t *testing.T) {
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeOCSError(w, http.StatusNotFound, http.StatusNotFound, "gone")
+	})
+	ctx := context.Background()
+
+	for name, call := range map[string]func() error{
+		"EditMessage":   func() error { return client.EditMessage(ctx, "abc123", 4711, "x") },
+		"DeleteMessage": func() error { return client.DeleteMessage(ctx, "abc123", 4711) },
+		"SetReadMarker": func() error { return client.SetReadMarker(ctx, "abc123", 4711) },
+	} {
+		if err := call(); !IsNotFound(err) {
+			t.Errorf("%s err = %v, want a not-found error", name, err)
+		}
+	}
+}

@@ -3,10 +3,12 @@ package connector
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/rs/zerolog"
+	"go.mau.fi/util/variationselector"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 
@@ -24,9 +26,20 @@ func (r *recordingQueuer) QueueRemoteEvent(_ *bridgev2.UserLogin, evt bridgev2.R
 }
 
 // newIngestClient returns a client whose remote events are recorded.
-func newIngestClient(t *testing.T) (*NCTalkClient, *recordingQueuer) {
+//
+// Reactions carry no reactor in the webhook payload, so ingesting one always
+// asks the server who reacted; reactors is what it answers with.
+func newIngestClient(t *testing.T, reactors ...nctalk.ReactionList) (*NCTalkClient, *recordingQueuer) {
 	t.Helper()
+	list := nctalk.ReactionList{}
+	if len(reactors) > 0 {
+		list = reactors[0]
+	}
 	url, _ := newOCSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/reaction/") {
+			writeOCS(t, w, list)
+			return
+		}
 		writeOCS(t, w, map[string]any{"token": "abc123token", "type": nctalk.RoomTypeGroup})
 	})
 	client := newTestClient(t, url, "alice", botConfig())
@@ -108,9 +121,14 @@ func TestHandleCreatePropagatesError(t *testing.T) {
 	}
 }
 
-func TestHandleReactionQueuesReaction(t *testing.T) {
-	client, rec := newIngestClient(t)
-	body := `{"type":"Like","actor":{"type":"Person","id":"users/bob"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"target":{"type":"Collection","id":"abc123token"},"content":"👍"}`
+// A Like activity names the message author, not the reactor, so the bridge
+// asks Talk who reacted and syncs the whole set rather than trusting the
+// payload. Here alice authored the message and bob is the one who reacted.
+func TestHandleReactionSyncsFromServer(t *testing.T) {
+	client, rec := newIngestClient(t, nctalk.ReactionList{
+		"\U0001f44d": {{ActorType: nctalk.ActorUsers, ActorID: "bob", Timestamp: 1700000000}},
+	})
+	body := `{"type":"Like","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"target":{"type":"Collection","id":"abc123token"},"content":"👍"}`
 
 	if err := client.handleReaction(context.Background(), mustParse(t, body), "abc123token", time.Now()); err != nil {
 		t.Fatalf("handleReaction failed: %v", err)
@@ -119,27 +137,54 @@ func TestHandleReactionQueuesReaction(t *testing.T) {
 		t.Fatalf("queued %d events, want 1", len(rec.events))
 	}
 
-	reaction, ok := rec.events[0].(*simplevent.Reaction)
+	sync, ok := rec.events[0].(*simplevent.ReactionSync)
 	if !ok {
-		t.Fatalf("queued %T, want a reaction event", rec.events[0])
+		t.Fatalf("queued %T, want a reaction sync event", rec.events[0])
 	}
-	if reaction.Type != bridgev2.RemoteEventReaction {
-		t.Errorf("event type = %v, want reaction", reaction.Type)
+	if sync.Type != bridgev2.RemoteEventReactionSync {
+		t.Errorf("event type = %v, want reaction sync", sync.Type)
 	}
-	if reaction.Emoji != "👍" || reaction.EmojiID != makeEmojiID("👍") {
-		t.Errorf("emoji = %q id = %q", reaction.Emoji, reaction.EmojiID)
+	if sync.TargetMessage != makeMessageID(client.host(), "abc123token", 4711) {
+		t.Errorf("target = %q", sync.TargetMessage)
 	}
-	if reaction.TargetMessage != makeMessageID(client.host(), "abc123token", 4711) {
-		t.Errorf("target = %q", reaction.TargetMessage)
+	if !sync.Reactions.HasAllUsers {
+		t.Error("Talk returns every reaction on the message, so the set is complete")
 	}
-	if reaction.Sender.Sender != makeUserID(client.host(), nctalk.ActorUsers, "bob") {
-		t.Errorf("sender = %q", reaction.Sender.Sender)
+
+	bob := makeUserID(client.host(), nctalk.ActorUsers, "bob")
+	user := sync.Reactions.Users[bob]
+	if user == nil {
+		t.Fatalf("no reactions for bob; got %v", sync.Reactions.Users)
+	}
+	if _, wrong := sync.Reactions.Users[makeUserID(client.host(), nctalk.ActorUsers, "alice")]; wrong {
+		t.Error("the message author must not be credited with the reaction")
+	}
+	if len(user.Reactions) != 1 {
+		t.Fatalf("bob has %d reactions, want 1", len(user.Reactions))
+	}
+	r := user.Reactions[0]
+	// The displayed emoji is fully qualified so Matrix clients render it as an
+	// emoji, but the ID stays the exact string Talk holds, which is what the
+	// bridge's own outgoing reactions are recorded under.
+	if r.Emoji != variationselector.Add("\U0001f44d") {
+		t.Errorf("emoji = %q, want it fully qualified", r.Emoji)
+	}
+	if r.EmojiID != makeEmojiID("\U0001f44d") {
+		t.Errorf("emoji ID = %q, want Talk's own string", r.EmojiID)
+	}
+	if !r.Timestamp.Equal(time.Unix(1700000000, 0)) {
+		t.Errorf("timestamp = %v, want Talk's own", r.Timestamp)
+	}
+	if !user.HasAllReactions {
+		t.Error("each user's list is complete, so old reactions should be dropped")
 	}
 }
 
-func TestHandleUndoQueuesReactionRemoval(t *testing.T) {
+// Removing the last reaction leaves an empty set, which is what tells the
+// bridge to redact the Matrix reactions that are no longer there.
+func TestHandleUndoSyncsEmptySet(t *testing.T) {
 	client, rec := newIngestClient(t)
-	body := `{"type":"Undo","actor":{"type":"Person","id":"users/bob"},"object":{"type":"Like","actor":{"type":"Person","id":"users/bob"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"content":"👍"},"target":{"type":"Collection","id":"abc123token"}}`
+	body := `{"type":"Undo","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Like","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"content":"👍"},"target":{"type":"Collection","id":"abc123token"}}`
 
 	if err := client.handleUndo(context.Background(), mustParse(t, body), "abc123token", time.Now()); err != nil {
 		t.Fatalf("handleUndo failed: %v", err)
@@ -148,12 +193,59 @@ func TestHandleUndoQueuesReactionRemoval(t *testing.T) {
 		t.Fatalf("queued %d events, want 1", len(rec.events))
 	}
 
-	reaction := rec.events[0].(*simplevent.Reaction)
-	if reaction.Type != bridgev2.RemoteEventReactionRemove {
-		t.Errorf("event type = %v, want reaction removal", reaction.Type)
+	sync := rec.events[0].(*simplevent.ReactionSync)
+	if sync.TargetMessage != makeMessageID(client.host(), "abc123token", 4711) {
+		t.Errorf("target = %q, want the nested Like's message", sync.TargetMessage)
 	}
-	if reaction.Emoji != "👍" {
-		t.Errorf("emoji = %q", reaction.Emoji)
+	if len(sync.Reactions.Users) != 0 {
+		t.Errorf("users = %v, want none left", sync.Reactions.Users)
+	}
+	if !sync.Reactions.HasAllUsers {
+		t.Error("an empty set only removes reactions if it is known to be complete")
+	}
+}
+
+// Talk actor types with no Matrix equivalent would otherwise produce broken
+// ghosts reacting in the room.
+func TestHandleReactionSkipsUnbridgeableActor(t *testing.T) {
+	client, rec := newIngestClient(t, nctalk.ReactionList{
+		"\U0001f44d": {
+			{ActorType: nctalk.ActorCircles, ActorID: "c1"},
+			{ActorType: nctalk.ActorUsers, ActorID: "bob"},
+		},
+	})
+	body := `{"type":"Like","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"target":{"type":"Collection","id":"abc123token"},"content":"👍"}`
+
+	if err := client.handleReaction(context.Background(), mustParse(t, body), "abc123token", time.Now()); err != nil {
+		t.Fatalf("handleReaction failed: %v", err)
+	}
+	sync := rec.events[0].(*simplevent.ReactionSync)
+	if len(sync.Reactions.Users) != 1 {
+		t.Errorf("users = %v, want only the bridgeable one", sync.Reactions.Users)
+	}
+}
+
+// If Talk cannot be asked who reacted, guessing would misattribute it, so the
+// event fails and is logged instead.
+func TestHandleReactionPropagatesLookupFailure(t *testing.T) {
+	url, _ := newOCSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeOCSError(w, http.StatusNotFound, "no such message")
+	})
+	client := newTestClient(t, url, "alice", botConfig())
+	client.queuer = &recordingQueuer{}
+	body := `{"type":"Like","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"target":{"type":"Collection","id":"abc123token"},"content":"👍"}`
+
+	if err := client.handleReaction(context.Background(), mustParse(t, body), "abc123token", time.Now()); err == nil {
+		t.Fatal("expected the lookup failure to surface")
+	}
+}
+
+func TestHandleReactionRejectsMalformedMessageID(t *testing.T) {
+	client, _ := newIngestClient(t)
+	body := `{"type":"Like","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"nope","name":"message","content":"{}"},"target":{"type":"Collection","id":"abc123token"},"content":"👍"}`
+
+	if err := client.handleReaction(context.Background(), mustParse(t, body), "abc123token", time.Now()); err == nil {
+		t.Fatal("expected an error for a malformed message ID")
 	}
 }
 
@@ -265,12 +357,9 @@ func TestProcessEventRejectsActivityWithNoToken(t *testing.T) {
 }
 
 func TestProcessEventRoutesByActivityType(t *testing.T) {
-	url, _ := newOCSServer(t, func(w http.ResponseWriter, r *http.Request) {
-		writeOCS(t, w, map[string]any{"token": "abc123token", "type": nctalk.RoomTypeGroup})
+	client, rec := newIngestClient(t, nctalk.ReactionList{
+		"\U0001f44d": {{ActorType: nctalk.ActorUsers, ActorID: "bob"}},
 	})
-	client := newTestClient(t, url, "alice", botConfig())
-	rec := &recordingQueuer{}
-	client.queuer = rec
 
 	nc := client.Main
 	nc.router = newLoginRouter(&fakeLogins{logins: []*bridgev2.UserLogin{client.UserLogin}})
@@ -360,11 +449,11 @@ func TestEventLogContextsAreSafe(t *testing.T) {
 	if err := client.handleReaction(context.Background(), mustParse(t, like), "abc123token", time.Now()); err != nil {
 		t.Fatalf("handleReaction failed: %v", err)
 	}
-	reaction := rec.events[0].(*simplevent.Reaction)
-	if reaction.LogContext == nil {
-		t.Fatal("no log context on the reaction event")
+	sync := rec.events[0].(*simplevent.ReactionSync)
+	if sync.LogContext == nil {
+		t.Fatal("no log context on the reaction sync event")
 	}
-	reaction.LogContext(zerolog.Nop().With())
+	sync.LogContext(zerolog.Nop().With())
 }
 
 // Driving the queued event through the interface bridgev2 actually calls, rather
@@ -393,22 +482,29 @@ func TestQueuedMessageConvertsThroughRemoteEvent(t *testing.T) {
 	}
 }
 
-// The same for reactions, which carry their payload on the event itself.
-func TestQueuedReactionCarriesItsEmoji(t *testing.T) {
-	client, rec := newIngestClient(t)
-	const likeFixture = `{"type":"Like","actor":{"type":"Person","id":"users/bob"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"target":{"type":"Collection","id":"abc123token"},"content":"👍"}`
+// The same for reactions: driving the queued event through the interface
+// bridgev2 calls, rather than reading the struct fields the connector just set.
+func TestQueuedReactionSyncCarriesItsUsers(t *testing.T) {
+	client, rec := newIngestClient(t, nctalk.ReactionList{
+		"\U0001f44d": {{ActorType: nctalk.ActorUsers, ActorID: "bob"}},
+	})
+	const likeFixture = `{"type":"Like","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"target":{"type":"Collection","id":"abc123token"},"content":"👍"}`
 
 	if err := client.handleReaction(context.Background(), mustParse(t, likeFixture), "abc123token", time.Now()); err != nil {
 		t.Fatalf("handleReaction failed: %v", err)
 	}
-	evt, ok := rec.events[0].(bridgev2.RemoteReaction)
+	evt, ok := rec.events[0].(bridgev2.RemoteReactionSync)
 	if !ok {
-		t.Fatalf("queued %T, want a RemoteReaction", rec.events[0])
-	}
-	if emoji, _ := evt.GetReactionEmoji(); emoji == "" {
-		t.Error("queued reaction has no emoji")
+		t.Fatalf("queued %T, want a RemoteReactionSync", rec.events[0])
 	}
 	if evt.GetTargetMessage() == "" {
-		t.Error("queued reaction has no target message")
+		t.Error("queued reaction sync has no target message")
+	}
+	backfill := evt.GetReactions().ToBackfill()
+	if len(backfill) != 1 {
+		t.Fatalf("backfill has %d reactions, want 1", len(backfill))
+	}
+	if backfill[0].Emoji == "" || backfill[0].Sender.Sender == "" {
+		t.Errorf("reaction is incomplete: %+v", backfill[0])
 	}
 }

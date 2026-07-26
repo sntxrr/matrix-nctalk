@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"go.mau.fi/util/variationselector"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 
 	"github.com/sntxrr/matrix-nextcloud/pkg/nctalk"
@@ -302,62 +304,17 @@ func (c *NCTalkClient) queueMessage(ctx context.Context, msg *talkMessage) {
 	})
 }
 
-// talkReaction is the bridge's normalised view of a Talk reaction event.
-type talkReaction struct {
-	TargetMessageID int64
-	ActorType       string
-	ActorID         string
-	Emoji           string
-	Timestamp       time.Time
-}
-
-// reactionFromActivity interprets a Like activity, or the Like nested inside an
-// Undo activity, as a reaction.
-//
-// emojiSource is the activity carrying the emoji and actorSource the activity
-// carrying the acting user. For a Like these are the same; for an Undo the
-// emoji comes from the nested Like while the actor comes from the Undo itself.
-func reactionFromActivity(emojiSource, actorSource *nctalk.WebhookEvent, receivedAt time.Time) (*talkReaction, error) {
-	note, err := emojiSource.Note()
-	if err != nil {
-		return nil, err
-	}
-	targetID, err := note.MessageID()
-	if err != nil {
-		return nil, err
-	}
-	actorType, actorID, err := parseTalkActor(actorSource.Actor.ID)
-	if err != nil {
-		return nil, err
-	}
-	if !isBridgeableActor(actorType) {
-		return nil, nil
-	}
-	if emojiSource.Content == "" {
-		return nil, fmt.Errorf("reaction activity has no emoji")
-	}
-
-	ts := actorSource.Timestamp()
-	if ts.IsZero() {
-		ts = receivedAt
-	}
-	return &talkReaction{
-		TargetMessageID: targetID,
-		ActorType:       actorType,
-		ActorID:         actorID,
-		Emoji:           emojiSource.Content,
-		Timestamp:       ts,
-	}, nil
-}
-
 // handleReaction bridges a reaction added in Talk.
 func (c *NCTalkClient) handleReaction(ctx context.Context, evt *nctalk.WebhookEvent, token string, receivedAt time.Time) error {
-	reaction, err := reactionFromActivity(evt, evt, receivedAt)
-	if err != nil || reaction == nil {
+	note, err := evt.Note()
+	if err != nil {
 		return err
 	}
-	c.queueReaction(ctx, token, reaction, bridgev2.RemoteEventReaction)
-	return nil
+	messageID, err := note.MessageID()
+	if err != nil {
+		return err
+	}
+	return c.syncReactions(ctx, token, messageID, receivedAt)
 }
 
 // handleUndo bridges a reaction removed in Talk. The undone Like is nested
@@ -371,34 +328,68 @@ func (c *NCTalkClient) handleUndo(ctx context.Context, evt *nctalk.WebhookEvent,
 		zerolog.Ctx(ctx).Debug().Str("undone_type", like.Type).Msg("Ignoring undo of a non-reaction activity")
 		return nil
 	}
-
-	// The emoji and target come from the nested Like; the acting user comes
-	// from the Undo. Talk only lets you remove your own reaction, so they
-	// agree, but the outer actor is the authoritative one.
-	reaction, err := reactionFromActivity(like, evt, receivedAt)
-	if err != nil || reaction == nil {
-		return err
-	}
-	c.queueReaction(ctx, token, reaction, bridgev2.RemoteEventReactionRemove)
-	return nil
+	return c.handleReaction(ctx, like, token, receivedAt)
 }
 
-// queueReaction hands a reaction event to the bridge.
-func (c *NCTalkClient) queueReaction(ctx context.Context, token string, reaction *talkReaction, eventType bridgev2.RemoteEventType) {
-	c.events().QueueRemoteEvent(c.UserLogin, &simplevent.Reaction{
+// syncReactions reconciles a message's reactions in Matrix with what Talk holds.
+//
+// Talk's Like and Undo activities name the author of the message rather than
+// the person reacting to it, and carry no field that identifies the reactor at
+// all, so a reaction event cannot be attributed from its payload. Instead the
+// activity is treated purely as a signal that something changed, and the
+// authoritative list is fetched and synced. That also covers the removal half,
+// which Talk reports the same way.
+//
+// Two reactions in quick succession produce two fetches that may be applied out
+// of order, since the webhook workers are concurrent. The next reaction on the
+// message corrects it, and the alternative — serialising every conversation —
+// costs more than the transient wrong emoji.
+func (c *NCTalkClient) syncReactions(ctx context.Context, token string, messageID int64, receivedAt time.Time) error {
+	list, err := c.Client.ListReactions(ctx, token, messageID)
+	if err != nil {
+		return fmt.Errorf("read reactions on message %d: %w", messageID, err)
+	}
+
+	users := make(map[networkid.UserID]*bridgev2.ReactionSyncUser)
+	for emoji, reactors := range list {
+		for _, reactor := range reactors {
+			if !isBridgeableActor(reactor.ActorType) {
+				continue
+			}
+			userID := makeUserID(c.host(), reactor.ActorType, reactor.ActorID)
+			user := users[userID]
+			if user == nil {
+				// Talk returns every reaction on the message, so each user's
+				// list is complete and anything missing has been removed.
+				user = &bridgev2.ReactionSyncUser{HasAllReactions: true}
+				users[userID] = user
+			}
+			user.Reactions = append(user.Reactions, &bridgev2.BackfillReaction{
+				Sender: c.eventSender(reactor.ActorType, reactor.ActorID),
+				// The ID stays the exact string Talk holds, so a reaction the
+				// bridge itself sent matches the row it already wrote instead of
+				// being redacted and re-sent. Only the displayed form is
+				// qualified, which is what makes clients render it as an emoji.
+				EmojiID:   makeEmojiID(emoji),
+				Emoji:     variationselector.Add(emoji),
+				Timestamp: time.Unix(reactor.Timestamp, 0),
+			})
+		}
+	}
+
+	c.events().QueueRemoteEvent(c.UserLogin, &simplevent.ReactionSync{
 		EventMeta: simplevent.EventMeta{
-			Type:      eventType,
+			Type:      bridgev2.RemoteEventReactionSync,
 			PortalKey: makePortalKey(c.host(), token),
-			Sender:    c.eventSender(reaction.ActorType, reaction.ActorID),
-			Timestamp: reaction.Timestamp,
+			Timestamp: receivedAt,
 			LogContext: func(c zerolog.Context) zerolog.Context {
-				return c.Int64("talk_message_id", reaction.TargetMessageID).Str("emoji", reaction.Emoji)
+				return c.Int64("talk_message_id", messageID).Int("reacting_users", len(users))
 			},
 		},
-		TargetMessage: makeMessageID(c.host(), token, reaction.TargetMessageID),
-		EmojiID:       makeEmojiID(reaction.Emoji),
-		Emoji:         reaction.Emoji,
+		TargetMessage: makeMessageID(c.host(), token, messageID),
+		Reactions:     &bridgev2.ReactionSyncData{Users: users, HasAllUsers: true},
 	})
+	return nil
 }
 
 // handleBotJoin reacts to the bridge bot being enabled in a conversation by
