@@ -1,0 +1,129 @@
+package nctalk
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
+
+// LoginFlowInit is the response to starting a Login Flow v2 handshake.
+type LoginFlowInit struct {
+	// Poll carries the credentials for polling the handshake to completion.
+	Poll struct {
+		Token    string `json:"token"`
+		Endpoint string `json:"endpoint"`
+	} `json:"poll"`
+	// Login is the URL the user must open in a browser to grant access.
+	Login string `json:"login"`
+}
+
+// LoginFlowResult is the credential set produced by a completed handshake.
+type LoginFlowResult struct {
+	Server      string `json:"server"`
+	LoginName   string `json:"loginName"`
+	AppPassword string `json:"appPassword"`
+}
+
+// ErrLoginPending is returned by PollLogin while the user has not yet approved
+// the request in their browser.
+var ErrLoginPending = errors.New("login not yet approved")
+
+// StartLoginFlow begins a Login Flow v2 handshake against baseURL.
+//
+// This is the preferred way to authenticate: the user approves the bridge in
+// their browser and Nextcloud mints a scoped app password, so the bridge never
+// handles the account password.
+func StartLoginFlow(ctx context.Context, httpClient *http.Client, baseURL string) (*LoginFlowInit, error) {
+	baseURL = strings.TrimRight(baseURL, "/")
+	c := &Client{BaseURL: baseURL, HTTP: httpClient}
+	if c.HTTP == nil {
+		c.HTTP = &http.Client{Timeout: 30 * time.Second}
+	}
+
+	var out LoginFlowInit
+	if err := c.postJSONNoAuth(ctx, baseURL+"/index.php/login/v2", nil, &out); err != nil {
+		return nil, fmt.Errorf("start login flow: %w", err)
+	}
+	if out.Poll.Token == "" || out.Poll.Endpoint == "" || out.Login == "" {
+		return nil, fmt.Errorf("start login flow: server returned an incomplete handshake")
+	}
+	return &out, nil
+}
+
+// PollLogin checks whether the user has approved the handshake.
+//
+// Nextcloud answers 404 until approval, which is reported as ErrLoginPending.
+func PollLogin(ctx context.Context, httpClient *http.Client, init *LoginFlowInit) (*LoginFlowResult, error) {
+	c := &Client{HTTP: httpClient}
+	if c.HTTP == nil {
+		c.HTTP = &http.Client{Timeout: 30 * time.Second}
+	}
+
+	form := url.Values{"token": {init.Poll.Token}}
+	var out LoginFlowResult
+	err := c.postJSONNoAuth(ctx, init.Poll.Endpoint, form, &out)
+	if err != nil {
+		var ocsErr *Error
+		if errors.As(err, &ocsErr) && ocsErr.HTTPStatus == http.StatusNotFound {
+			return nil, ErrLoginPending
+		}
+		return nil, fmt.Errorf("poll login: %w", err)
+	}
+	if out.AppPassword == "" || out.LoginName == "" {
+		return nil, fmt.Errorf("poll login: server returned an incomplete credential set")
+	}
+	return &out, nil
+}
+
+// WaitForLogin polls until the user approves the handshake, ctx is cancelled,
+// or the flow expires.
+//
+// Nextcloud expires a Login Flow v2 handshake after 20 minutes, so callers
+// should pass a context bounded by roughly that.
+func WaitForLogin(ctx context.Context, httpClient *http.Client, init *LoginFlowInit, interval time.Duration) (*LoginFlowResult, error) {
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		res, err := PollLogin(ctx, httpClient, init)
+		if err == nil {
+			return res, nil
+		}
+		if !errors.Is(err, ErrLoginPending) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// VerifyCredentials confirms the client's credentials work and returns the
+// canonical user ID and Talk capabilities.
+//
+// It doubles as the validation step for the manual app-password login flow.
+func (c *Client) VerifyCredentials(ctx context.Context) (*UserDetails, *Capabilities, error) {
+	caps, err := c.Capabilities(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The provisioning "user" endpoint resolves the authenticated user without
+	// needing to know the canonical casing of their user ID up front.
+	var me UserDetails
+	if _, err := c.requestJSON(ctx, http.MethodGet, "/ocs/v2.php/cloud/user", nil, nil, &me); err != nil {
+		return nil, nil, fmt.Errorf("verify credentials: %w", err)
+	}
+	if me.ID == "" {
+		return nil, nil, fmt.Errorf("verify credentials: server did not return a user ID")
+	}
+	return &me, caps, nil
+}

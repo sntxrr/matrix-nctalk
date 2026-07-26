@@ -1,0 +1,32 @@
+# The shared secret from `occ talk:bot:install`.
+#
+# Install the bot on the Nextcloud server with:
+#   occ talk:bot:install "Matrix Bridge" <secret> \
+#       "https://bridge.example.com/_nctalk/webhook" \
+#       --feature webhook --feature response --feature reaction
+#
+# Do NOT pass --no-setup: that installs the bot in the "no setup" state, which
+# prevents the bridge from enabling itself in individual conversations.
+bot_secret: ""
+
+# The display name the bot was installed with. The bridge uses this to find its
+# own bot ID in a conversation's bot list, so it must match the name above.
+bot_name: Matrix Bridge
+
+# Automatically enable the bot in conversations where the logged-in Nextcloud
+# user is a moderator. Conversations where they are not a moderator need a
+# moderator to enable the bot manually, or `occ talk:bot:setup <botId> <token>`.
+auto_enable_bot: true
+
+# Nextcloud servers users are allowed to log into, as bare hostnames.
+# Leave empty to allow any server.
+allowed_servers: []
+
+# Relay messages from Matrix users who have not linked a Nextcloud account.
+# When true, their messages are posted by the bot prefixed with their name.
+# When false, they are rejected with an error so nothing is silently misattributed.
+relay_unlinked_users: false
+
+# How long to wait for the user to approve a Login Flow v2 request in their
+# browser. Nextcloud expires the handshake after 20 minutes.
+login_timeout: 15m

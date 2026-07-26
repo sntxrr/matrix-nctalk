@@ -1,0 +1,13 @@
+# Build output
+/matrix-nctalk
+
+# Runtime state — these hold live credentials and encryption keys
+/config.yaml
+/registration.yaml
+/matrix-nctalk.db
+/matrix-nctalk.db-shm
+/matrix-nctalk.db-wal
+/logs/
+
+# The generated example config is safe to commit; the real one is not.
+!/example-config.yaml
