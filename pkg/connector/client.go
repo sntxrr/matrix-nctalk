@@ -23,8 +23,6 @@ import (
 const (
 	talkEditMaxAge   = 24 * time.Hour
 	talkDeleteMaxAge = 6 * time.Hour
-	// talkMaxMessageLength is the hard limit the chat endpoint enforces.
-	talkMaxMessageLength = 32000
 )
 
 // NCTalkClient is the per-login network client. One exists per logged-in
@@ -45,6 +43,9 @@ type NCTalkClient struct {
 	// queuer overrides where remote events are sent. It is nil in production,
 	// where events go to the bridge; tests substitute a recorder.
 	queuer eventQueuer
+	// mxidParser overrides how mention pills are resolved to Talk actors. It is
+	// nil in production, where the bridge's Matrix connector is used.
+	mxidParser ghostParser
 }
 
 var _ bridgev2.NetworkAPI = (*NCTalkClient)(nil)
@@ -344,7 +345,7 @@ func (c *NCTalkClient) GetCapabilities(ctx context.Context, portal *bridgev2.Por
 
 	feats := &event.RoomFeatures{
 		ID:            "github.com/sntxrr/matrix-nextcloud/1",
-		MaxTextLength: talkMaxMessageLength,
+		MaxTextLength: nctalk.MaxChatLength,
 		Formatting: event.FormattingFeatureMap{
 			event.FmtBold:          supported,
 			event.FmtItalic:        supported,
@@ -384,6 +385,134 @@ func (c *NCTalkClient) GetCapabilities(ctx context.Context, portal *bridgev2.Por
 }
 
 // HandleMatrixMessage implements bridgev2.NetworkAPI.
+//
+// Messages are posted with the sender's own app password so they appear in Talk
+// as the real Nextcloud user. The Talk message ID is returned so that when the
+// bot webhook delivers the bridge's own message back, bridgev2 recognises it as
+// already bridged instead of echoing it into the room a second time.
 func (c *NCTalkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
-	return nil, fmt.Errorf("sending to Nextcloud Talk is not implemented yet")
+	host, token, err := parsePortalID(msg.Portal.ID)
+	if err != nil {
+		return nil, err
+	}
+	if host != c.host() {
+		return nil, fmt.Errorf("portal %s belongs to a different Nextcloud server", msg.Portal.ID)
+	}
+
+	out, err := c.convertToTalk(ctx, token, msg)
+	if err != nil {
+		return nil, err
+	}
+
+	// OrigSender is only set when the Matrix sender has no Nextcloud account of
+	// their own and the portal has a relay login, in which case bridgev2 has
+	// already prefixed the text with their display name.
+	if msg.OrigSender != nil {
+		return c.relayMatrixMessage(ctx, host, token, out)
+	}
+
+	sent, err := c.sendToTalk(ctx, token, out)
+	if err != nil {
+		return nil, err
+	}
+
+	return &bridgev2.MatrixMessageResponse{
+		DB: &database.Message{
+			ID:       makeMessageID(host, token, sent.ID),
+			SenderID: makeUserID(host, nctalk.ActorUsers, c.meta().Username),
+			// Talk's own timestamp, not the Matrix one, because Talk measures its
+			// edit and delete windows from it.
+			Timestamp: time.Unix(sent.Timestamp, 0),
+			Metadata:  &MessageMetadata{ReferenceID: out.ReferenceID},
+		},
+		// Talk message IDs are a per-server monotonic sequence, which is the same
+		// stream order incoming messages carry.
+		StreamOrder: sent.ID,
+	}, nil
+}
+
+// sendToTalk posts a converted message as the logged-in Nextcloud user.
+func (c *NCTalkClient) sendToTalk(ctx context.Context, token string, out *talkOutgoing) (*nctalk.Message, error) {
+	req := nctalk.SendMessageRequest{
+		Message:     out.Text,
+		ReplyTo:     out.ReplyTo,
+		ThreadID:    out.ThreadID,
+		ReferenceID: out.ReferenceID,
+	}
+
+	sent, err := c.Client.SendMessage(ctx, token, req)
+	if err == nil {
+		return sent, nil
+	}
+
+	// Talk answers 400 when it will not accept the parent of a reply — it was
+	// deleted, it is a system message, or the thread does not match. The text is
+	// still worth delivering, so retry once without the relation rather than
+	// failing a message the user has already sent.
+	if nctalk.IsBadRequest(err) && (req.ReplyTo > 0 || req.ThreadID > 0) {
+		zerolog.Ctx(ctx).Warn().Err(err).
+			Int64("reply_to", req.ReplyTo).
+			Int64("thread_id", req.ThreadID).
+			Msg("Talk rejected the message relation, resending without it")
+		req.ReplyTo, req.ThreadID = 0, 0
+		if retried, retryErr := c.Client.SendMessage(ctx, token, req); retryErr == nil {
+			return retried, nil
+		}
+	}
+	return nil, c.wrapSendError(ctx, err)
+}
+
+// relayMatrixMessage posts a message on behalf of a Matrix user who has no
+// Nextcloud account, using the registered bridge bot.
+//
+// The bot endpoint acknowledges without reporting the ID Talk assigned, so the
+// message is recorded under an ID derived from its reference instead. That is
+// enough to keep the Matrix event mapped, but Talk-side relations to a relayed
+// message cannot be resolved. Talk does not deliver bot-authored messages to
+// bots, so no echo arrives to fill the gap in either.
+func (c *NCTalkClient) relayMatrixMessage(ctx context.Context, host, token string, out *talkOutgoing) (*bridgev2.MatrixMessageResponse, error) {
+	if !c.Main.Config.RelayUnlinkedUsers {
+		return nil, errRelayDisabled
+	}
+	if err := c.Bot.SendMessage(ctx, token, out.Text, out.ReferenceID, out.ReplyTo, false); err != nil {
+		return nil, c.wrapSendError(ctx, err)
+	}
+
+	zerolog.Ctx(ctx).Debug().
+		Str("token", token).
+		Str("reference_id", out.ReferenceID).
+		Msg("Relayed a Matrix message to Talk as the bridge bot")
+
+	return &bridgev2.MatrixMessageResponse{
+		DB: &database.Message{
+			ID: makeRelayedMessageID(host, token, out.ReferenceID),
+			// The relay login owns the portal, so attribute the row to it rather
+			// than inventing an actor ID for the bot, which Talk never tells us.
+			SenderID: makeUserID(host, nctalk.ActorUsers, c.meta().Username),
+			Metadata: &MessageMetadata{ReferenceID: out.ReferenceID, SentViaBot: true},
+		},
+	}, nil
+}
+
+// wrapSendError turns a Talk rejection into the message status the Matrix client
+// should show, and flags the login when its credentials have stopped working.
+func (c *NCTalkClient) wrapSendError(ctx context.Context, err error) error {
+	switch {
+	case nctalk.IsTooLarge(err):
+		return errMessageTooLong
+	case nctalk.IsForbidden(err):
+		return errNotAllowedInConversation
+	case nctalk.IsUnauthorized(err):
+		// Nothing else will notice until the next Connect, which may be days
+		// away, so surface it now: every later send would fail the same way.
+		c.UserLogin.BridgeState.Send(status.BridgeState{
+			StateEvent: status.StateBadCredentials,
+			Error:      "nctalk-invalid-app-password",
+			Message:    "The Nextcloud app password is no longer valid. Log in again with `login`.",
+		})
+		zerolog.Ctx(ctx).Warn().Err(err).Msg("Talk rejected the login's app password while sending")
+		return err
+	default:
+		return err
+	}
 }

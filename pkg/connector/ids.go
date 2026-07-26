@@ -83,6 +83,19 @@ func makeMessageID(host, token string, messageID int64) networkid.MessageID {
 	return networkid.MessageID(fmt.Sprintf("%s%s%s%s%d", host, idSep, token, idSep, messageID))
 }
 
+// relayedIDPrefix marks a message ID that carries a reference string instead of
+// a Talk message ID.
+const relayedIDPrefix = "ref:"
+
+// makeRelayedMessageID builds the message ID for a message the bridge relayed
+// through the bot endpoint, which acknowledges without reporting the ID Talk
+// assigned. The reference the bridge chose is unique per Matrix event, so it
+// keeps the row addressable; parseMessageID deliberately rejects these, since
+// there is no Talk message ID to hand to the API.
+func makeRelayedMessageID(host, token, referenceID string) networkid.MessageID {
+	return networkid.MessageID(host + idSep + token + idSep + relayedIDPrefix + referenceID)
+}
+
 // parseMessageID splits a message ID into host, conversation token and the
 // numeric Talk message ID.
 func parseMessageID(id networkid.MessageID) (host, token string, messageID int64, err error) {

@@ -280,8 +280,8 @@ func TestGetCapabilitiesReflectsServerFeatures(t *testing.T) {
 	if feats.Thread != event.CapLevelFullySupported {
 		t.Error("threads should be advertised")
 	}
-	if feats.MaxTextLength != talkMaxMessageLength {
-		t.Errorf("max text length = %d, want %d", feats.MaxTextLength, talkMaxMessageLength)
+	if feats.MaxTextLength != nctalk.MaxChatLength {
+		t.Errorf("max text length = %d, want %d", feats.MaxTextLength, nctalk.MaxChatLength)
 	}
 }
 
@@ -345,13 +345,6 @@ func TestDownloadRejectsErrorStatus(t *testing.T) {
 
 	if _, err := client.download(context.Background(), url+"/missing"); err == nil {
 		t.Fatal("expected an error for a 404")
-	}
-}
-
-func TestHandleMatrixMessageNotYetImplemented(t *testing.T) {
-	client := newTestClient(t, "https://cloud.example.com", "alice", Config{})
-	if _, err := client.HandleMatrixMessage(context.Background(), nil); err == nil {
-		t.Fatal("sending to Talk is not implemented yet, so this must error rather than silently drop")
 	}
 }
 

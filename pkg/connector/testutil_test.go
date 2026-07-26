@@ -11,6 +11,9 @@ import (
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 
 	"github.com/sntxrr/matrix-nextcloud/pkg/nctalk"
 )
@@ -132,4 +135,38 @@ func newTestGhost(host, actorType, actorID string) *bridgev2.Ghost {
 // paths that log but do not touch the database or Matrix.
 func newQuietBridge() *bridgev2.Bridge {
 	return &bridgev2.Bridge{Log: zerolog.Nop()}
+}
+
+// fakeGhostParser stands in for the Matrix connector's ghost MXID parsing, which
+// is all the outgoing mention converter needs from the bridge.
+type fakeGhostParser struct {
+	ghosts map[id.UserID]networkid.UserID
+}
+
+func (f *fakeGhostParser) ParseGhostMXID(mxid id.UserID) (networkid.UserID, bool) {
+	ghost, ok := f.ghosts[mxid]
+	return ghost, ok
+}
+
+// newTestMatrixMessage builds the outgoing Matrix event bridgev2 would hand to
+// HandleMatrixMessage.
+func newTestMatrixMessage(portal *bridgev2.Portal, content *event.MessageEventContent) *bridgev2.MatrixMessage {
+	return &bridgev2.MatrixMessage{
+		MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{
+			Event: &event.Event{
+				ID:        "$event1:matrix.example.com",
+				Sender:    "@alice:matrix.example.com",
+				Timestamp: 1700000000000,
+				RoomID:    "!room:matrix.example.com",
+			},
+			Content: content,
+			Portal:  portal,
+		},
+	}
+}
+
+// newTestTargetMessage builds a stored message an outgoing event can point at,
+// as bridgev2 resolves reply and thread targets before calling the connector.
+func newTestTargetMessage(id networkid.MessageID) *database.Message {
+	return &database.Message{ID: id}
 }

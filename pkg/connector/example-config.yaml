@@ -25,6 +25,9 @@ allowed_servers: []
 # Relay messages from Matrix users who have not linked a Nextcloud account.
 # When true, their messages are posted by the bot prefixed with their name.
 # When false, they are rejected with an error so nothing is silently misattributed.
+# Relayed messages are second-class: Talk's bot endpoint does not report the ID it
+# assigned them, so they cannot later be edited, deleted, or replied to from
+# Matrix. A portal also needs a relay login set before this takes effect.
 relay_unlinked_users: false
 
 # How long to wait for the user to approve a Login Flow v2 request in their
