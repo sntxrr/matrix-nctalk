@@ -94,6 +94,14 @@ func (c *NCTalkClient) Connect(ctx context.Context) {
 		return
 	}
 
+	// Pre-populate the webhook routing cache so the first message in each
+	// conversation does not pay for a participation probe.
+	if c.Main.router != nil {
+		if err := c.Main.router.Warm(ctx, c.UserLogin); err != nil {
+			log.Warn().Err(err).Msg("Failed to pre-load conversation list for webhook routing")
+		}
+	}
+
 	log.Info().
 		Str("nextcloud_user", me.ID).
 		Str("host", c.host()).
@@ -199,11 +207,16 @@ func (c *NCTalkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal)
 		CanBackfill: true,
 		ExtraUpdates: func(ctx context.Context, p *bridgev2.Portal) bool {
 			meta := p.Metadata.(*PortalMetadata)
-			if meta.ConversationType == conv.Type {
-				return false
+			before := *meta
+
+			if meta.ConversationType != conv.Type {
+				meta.ConversationType = conv.Type
 			}
-			meta.ConversationType = conv.Type
-			return true
+			// Without the bot enabled, Talk never delivers this conversation's
+			// messages, so this is what makes a portal actually two-way.
+			c.ensureBotEnabled(ctx, p, conv)
+
+			return *meta != before
 		},
 	}
 	if conv.Description != "" {

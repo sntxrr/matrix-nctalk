@@ -24,6 +24,12 @@ type NCTalkConnector struct {
 
 	// HTTP is shared by all outgoing Nextcloud requests.
 	HTTP *http.Client
+
+	// router maps incoming webhook events to the login that owns the portal.
+	router *loginRouter
+	// queue carries verified webhook events from the HTTP handler to the
+	// workers, keeping the handler within Talk's five second budget.
+	queue chan *pendingEvent
 }
 
 var _ bridgev2.NetworkConnector = (*NCTalkConnector)(nil)

@@ -10,7 +10,7 @@ This is a double-puppeting bridge instead:
 - Matrix users post into Talk **as their own Nextcloud account**, not as a relay bot.
 - Ingress uses Talk's **bot webhook API**, so messages are pushed rather than polled.
 
-> **Status: early development.** Login, conversation and user metadata sync work. Message bridging is not finished yet — see [Status](#status).
+> **Status: early development.** Login, metadata sync, and Talk → Matrix message and reaction bridging work. Sending from Matrix to Talk is not implemented yet — see [Status](#status).
 
 ## Requirements
 
@@ -91,7 +91,7 @@ Talk uses the same HMAC primitive each way but signs different data, which is ea
 | Milestone | State |
 |---|---|
 | M0 — scaffold, OCS client, login flows | Done |
-| M1 — webhook ingress, portals, ghosts | In progress |
+| M1 — webhook ingress, portals, ghosts | Done |
 | M2 — egress as the real Nextcloud user | Not started |
 | M3 — reactions, edits, redactions, receipts | Not started |
 | M4 — files, rich objects, system messages | Not started |
