@@ -10,55 +10,73 @@ This is a double-puppeting bridge instead:
 - Matrix users post into Talk **as their own Nextcloud account**, not as a relay bot.
 - Ingress uses Talk's **bot webhook API**, so messages are pushed rather than polled.
 
-> **Status: early development.** Messages, files, reactions, edits, deletions and read receipts bridge both ways, with replies, mentions and formatting. History is backfilled into new rooms and after downtime. There is no Docker image yet — see [Status](#status).
+> **Status: early development, but running.** Messages, files, reactions, edits, deletions and read receipts bridge both ways, with replies, mentions and formatting. History is backfilled into new rooms and after downtime. Published as a multi-arch container image — see [Running it](#running-it).
+>
+> Back up the bridge database before upgrading. Schema migrations are forward-only.
 
 ## Requirements
 
 - Nextcloud 27.1 or newer with Talk 17.1 or newer (the `bots-v1` capability).
 - Shell access to the Nextcloud server, to run `occ talk:bot:install` once.
 - A Matrix homeserver you can register an appservice on.
-- Go 1.24+ to build.
+- Docker, or Go 1.24+ and a C compiler to build from source.
 
-## Building
+## Deployment topology
+
+Most bridges have one inbound path. This one has two, and they share a listener:
+
+```
+   homeserver ──── appservice transactions ────▶ ┐
+                                                 ├──▶  matrix-nctalk :29337
+   Nextcloud  ──── bot webhooks ───────────────▶ ┘           │
+        ▲                                                    │
+        └──────────── OCS + WebDAV, as each user ────────────┘
+```
+
+The webhook endpoint is mounted on the *appservice* HTTP listener, so if Nextcloud lives on another host and you expose that port to reach it, the appservice endpoints are exposed too. The appservice side is guarded by `hs_token` and the webhook by Talk's HMAC signature, so this is not a hole — but put it behind a reverse proxy with TLS regardless. If Nextcloud and the homeserver are both local to the bridge, nothing needs to be published at all.
+
+## Running it
+
+### With Docker
+
+```sh
+mkdir -p data && curl -O https://raw.githubusercontent.com/sntxrr/matrix-nctalk/main/docker-compose.yaml
+docker compose up          # writes data/config.yaml and stops
+$EDITOR data/config.yaml   # homeserver, appservice.public_address, permissions
+docker compose up          # writes data/registration.yaml and stops
+```
+
+Register `data/registration.yaml` with your homeserver and restart it. Then [install the bot](#installing-the-bot) and `docker compose up -d`.
+
+Images are published for `linux/amd64` and `linux/arm64` at `ghcr.io/sntxrr/matrix-nctalk`.
+
+### From source
 
 ```sh
 make build
-```
-
-The build uses the `goolm` tag to select mautrix's pure-Go Olm implementation. Without it, the build requires libolm's C headers.
-
-## Setup
-
-### 1. Generate the config and registration
-
-```sh
 ./matrix-nctalk -e -c config.yaml     # write an example config
-$EDITOR config.yaml                    # fill in homeserver, appservice, network
+$EDITOR config.yaml
 ./matrix-nctalk -g -c config.yaml -r registration.yaml
 ```
 
-Register `registration.yaml` with your homeserver and restart it.
+The build uses the `goolm` tag to select mautrix's pure-Go Olm implementation, so libolm is not needed. **CGO is required regardless**: mautrix's `mxmain` imports the C sqlite3 driver unconditionally, even when you configure Postgres, so `CGO_ENABLED=0` will not build.
 
 **`appservice.public_address` must be set to a real URL.** The Matrix connector treats the placeholder value as unset and then exposes no HTTP server at all, which is what the webhook endpoint is mounted on — so the bridge refuses to start. Set it to the address Nextcloud can reach the bridge at.
 
-### 2. Install the bot on Nextcloud
+### Installing the bot
 
-Generate a shared secret and install the bot, pointing it at the bridge's public address:
+The bridge receives messages through a Talk bot, which has to be registered on the Nextcloud server. Ask the bridge for the exact command:
 
 ```sh
-occ talk:bot:install "Matrix Bridge" "$SECRET" \
-    "https://bridge.example.com/_nctalk/webhook" \
-    --feature webhook --feature response --feature reaction
+matrix-nctalk bot-install -c config.yaml
+# or: docker compose run --rm matrix-nctalk bot-install
 ```
 
-Two things matter here:
+It reads your public address, generates a conforming shared secret if the config has none, and prints the `occ talk:bot:install` line to run on the Nextcloud server. Doing it by hand is possible but has four separate footguns — the argument order, the 40–128 character secret, the non-default `--feature reaction`, and `--no-setup`, which permanently blocks the bridge from adding itself to conversations. The command explains each.
 
-- **Do not pass `--no-setup`.** That installs the bot in Talk's "no setup" state, where only an admin can add it to conversations. The bridge then cannot enable itself and every conversation needs a manual `occ talk:bot:setup`.
-- **`bot_name` in the config must match the name above.** The bridge finds its own bot ID by looking itself up by name in a conversation's bot list, which is the only route that does not require admin API access.
+`bot_name` in the config must match the name the bot was installed under: the bridge finds its own bot ID by looking itself up by name in a conversation's bot list, which is the only route that does not need admin API access.
 
-Put the same secret in `network.bot_secret` in `config.yaml`.
-
-### 3. Log in
+### Log in
 
 Start the bridge, then message the bridge bot on Matrix:
 
@@ -166,16 +184,19 @@ Only conversations that already have a portal are resynced — a timer is not a 
 | M3 — reactions, edits, redactions, receipts | Done |
 | M4 — files, rich objects, system messages | Done |
 | M5 — backfill and metadata sync | Done |
-| M6 — Docker packaging | Not started |
+| M6 — Docker packaging, releases | Done |
 
 Out of scope for v1: voice/video calls (bridged only as notices), Talk Federation interop, and breakout rooms.
 
 ## Layout
 
 ```
-cmd/matrix-nctalk/    entry point
+cmd/matrix-nctalk/    entry point and the bot-install helper
 pkg/connector/        bridgev2 network connector
 pkg/nctalk/           standalone Nextcloud OCS client, no bridge dependencies
+Dockerfile            two-stage build; CGO is required, libolm is not
+docker-run.sh         container entrypoint, walks a first run through setup
+docker-compose.yaml   running it against your own Synapse and Nextcloud
 ```
 
 ## Licence

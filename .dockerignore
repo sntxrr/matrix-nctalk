@@ -1,0 +1,13 @@
+# Everything the image does not need. Keeping the build context small also keeps
+# secrets out of it: dev/config.yaml holds real tokens after `make dev-up`.
+.git
+.github
+dev/
+docker-compose*.yaml
+matrix-nctalk
+coverage.out
+*.db
+*.db-shm
+*.db-wal
+registration.yaml
+config.yaml

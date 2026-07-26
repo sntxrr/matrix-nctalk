@@ -1,10 +1,11 @@
-module github.com/sntxrr/matrix-nextcloud
+module github.com/sntxrr/matrix-nctalk
 
 go 1.26.2
 
 require (
 	github.com/rs/zerolog v1.35.1
 	go.mau.fi/util v0.9.11
+	gopkg.in/yaml.v3 v3.0.1
 	maunium.net/go/mautrix v0.29.0
 )
 
@@ -32,6 +33,5 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	maunium.net/go/mauflag v1.0.0 // indirect
 )

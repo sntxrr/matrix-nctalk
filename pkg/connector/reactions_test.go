@@ -28,7 +28,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 
-	"github.com/sntxrr/matrix-nextcloud/pkg/nctalk"
+	"github.com/sntxrr/matrix-nctalk/pkg/nctalk"
 )
 
 // reactionPath is the endpoint a reaction must reach.

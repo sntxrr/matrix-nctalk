@@ -28,7 +28,7 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/format"
 
-	"github.com/sntxrr/matrix-nextcloud/pkg/nctalk"
+	"github.com/sntxrr/matrix-nctalk/pkg/nctalk"
 )
 
 // talkMessage is the bridge's normalised view of an incoming Talk message,

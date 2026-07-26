@@ -30,7 +30,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/id"
 
-	"github.com/sntxrr/matrix-nextcloud/pkg/nctalk"
+	"github.com/sntxrr/matrix-nctalk/pkg/nctalk"
 )
 
 // fakePortals stands in for the bridge's portal store.

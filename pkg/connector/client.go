@@ -33,7 +33,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
 
-	"github.com/sntxrr/matrix-nextcloud/pkg/nctalk"
+	"github.com/sntxrr/matrix-nctalk/pkg/nctalk"
 )
 
 // Talk's own limits on modifying messages, from the chat API documentation.
@@ -372,7 +372,7 @@ func (c *NCTalkClient) GetCapabilities(ctx context.Context, portal *bridgev2.Por
 	unsupported := event.CapLevelUnsupported
 
 	feats := &event.RoomFeatures{
-		ID:            "github.com/sntxrr/matrix-nextcloud/1",
+		ID:            "github.com/sntxrr/matrix-nctalk/1",
 		MaxTextLength: nctalk.MaxChatLength,
 		Formatting: event.FormattingFeatureMap{
 			event.FmtBold:          supported,

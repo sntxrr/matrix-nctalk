@@ -30,7 +30,7 @@ import (
 
 	"maunium.net/go/mautrix/bridgev2"
 
-	"github.com/sntxrr/matrix-nextcloud/pkg/nctalk"
+	"github.com/sntxrr/matrix-nctalk/pkg/nctalk"
 )
 
 // NCTalkConnector is the top-level bridgev2 network connector.
@@ -59,7 +59,8 @@ func (nc *NCTalkConnector) Init(bridge *bridgev2.Bridge) {
 // Start implements bridgev2.NetworkConnector.
 func (nc *NCTalkConnector) Start(ctx context.Context) error {
 	if nc.Config.BotSecret == "" {
-		return fmt.Errorf("network.bot_secret is not set; install the bot with `occ talk:bot:install` and copy the shared secret into the config")
+		return fmt.Errorf("network.bot_secret is not set; run `matrix-nctalk bot-install` for the " +
+			"`occ talk:bot:install` command to run on the Nextcloud server, then copy the shared secret into the config")
 	}
 	if nc.Config.BotName == "" {
 		return fmt.Errorf("network.bot_name is not set; it must match the name the bot was installed with")
@@ -78,7 +79,7 @@ func (nc *NCTalkConnector) GetName() bridgev2.BridgeName {
 		// an invalid mxc:// URI is worse than none.
 		NetworkIcon:          "",
 		NetworkID:            "nctalk",
-		BeeperBridgeType:     "github.com/sntxrr/matrix-nextcloud",
+		BeeperBridgeType:     "github.com/sntxrr/matrix-nctalk",
 		DefaultPort:          29337,
 		DefaultCommandPrefix: "!nctalk",
 	}

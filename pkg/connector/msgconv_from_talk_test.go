@@ -23,7 +23,7 @@ import (
 
 	"maunium.net/go/mautrix/event"
 
-	"github.com/sntxrr/matrix-nextcloud/pkg/nctalk"
+	"github.com/sntxrr/matrix-nctalk/pkg/nctalk"
 )
 
 func TestRenderTalkMessage(t *testing.T) {

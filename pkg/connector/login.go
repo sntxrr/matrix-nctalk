@@ -27,7 +27,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/status"
 
-	"github.com/sntxrr/matrix-nextcloud/pkg/nctalk"
+	"github.com/sntxrr/matrix-nctalk/pkg/nctalk"
 )
 
 const (
@@ -36,9 +36,9 @@ const (
 	// LoginFlowIDAppPassword takes a manually created app password.
 	LoginFlowIDAppPassword = "app-password"
 
-	loginStepServerURL   = "com.github.sntxrr.matrix-nextcloud.server_url"
-	loginStepBrowserWait = "com.github.sntxrr.matrix-nextcloud.browser_wait"
-	loginStepCredentials = "com.github.sntxrr.matrix-nextcloud.credentials"
+	loginStepServerURL   = "com.github.sntxrr.matrix-nctalk.server_url"
+	loginStepBrowserWait = "com.github.sntxrr.matrix-nctalk.browser_wait"
+	loginStepCredentials = "com.github.sntxrr.matrix-nctalk.credentials"
 )
 
 // GetLoginFlows implements bridgev2.NetworkConnector.
@@ -284,7 +284,7 @@ func (l *NCTalkLogin) finish(ctx context.Context, username, appPassword string) 
 
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeComplete,
-		StepID:       "com.github.sntxrr.matrix-nextcloud.complete",
+		StepID:       "com.github.sntxrr.matrix-nctalk.complete",
 		Instructions: fmt.Sprintf("Logged in as %s on %s.", me.DisplayName, host),
 		CompleteParams: &bridgev2.LoginCompleteParams{
 			UserLoginID: ul.ID,

@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sntxrr/matrix-nextcloud/pkg/nctalk"
+	"github.com/sntxrr/matrix-nctalk/pkg/nctalk"
 )
 
 const testBotName = "Matrix Bridge"

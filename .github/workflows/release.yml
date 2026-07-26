@@ -1,0 +1,170 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  # CGO is mandatory — mautrix's mxmain imports the C sqlite3 driver
+  # unconditionally — so each architecture is built on its own native runner.
+  # That avoids both QEMU emulation of the compiler and a cross toolchain.
+  image:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # progver discards a commit of 8 characters or fewer and ignores a build
+      # time that is not RFC 3339, so both are produced deliberately here.
+      - name: Build timestamp
+        id: now
+        run: echo "rfc3339=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ steps.now.outputs.rfc3339 }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Save the digest for the manifest
+        id: export
+        run: |
+          mkdir -p /tmp/digests
+          echo "${{ steps.build.outputs.digest }}" > "/tmp/digests/$(echo '${{ matrix.platform }}' | tr / -)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ strategy.job-index }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  # One manifest list pointing at both architecture-specific images, so a plain
+  # `docker pull` gets the right one.
+  manifest:
+    needs: image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: /tmp/digests
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push the manifest list
+        run: |
+          set -eu
+          refs=""
+          for f in /tmp/digests/*; do
+            refs="$refs ${IMAGE}@$(cat "$f")"
+          done
+          tag="${GITHUB_REF_NAME}"
+          minor="${tag%.*}"          # v1.2.3 -> v1.2
+          # `latest` moves only on a release, never on a push to main: a bridge
+          # holding a migrating database is the wrong thing to silently roll
+          # forward.
+          docker buildx imagetools create \
+            -t "${IMAGE}:${tag}" \
+            -t "${IMAGE}:${minor}" \
+            -t "${IMAGE}:latest" \
+            $refs
+          docker buildx imagetools inspect "${IMAGE}:${tag}"
+
+  binaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: |
+          set -eu
+          # progver drops a commit of 8 characters or fewer, so this must be the
+          # full SHA, and the build time must be RFC 3339 or it is ignored.
+          go build -tags goolm \
+            -ldflags "-s -w \
+              -X main.Tag=${GITHUB_REF_NAME} \
+              -X main.Commit=${GITHUB_SHA} \
+              -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o "matrix-nctalk-linux-${{ matrix.arch }}" ./cmd/matrix-nctalk
+          ./matrix-nctalk-linux-${{ matrix.arch }} --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.arch }}
+          path: matrix-nctalk-linux-${{ matrix.arch }}
+          retention-days: 1
+
+  release:
+    needs: [manifest, binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: dist
+
+      - name: Checksums
+        run: cd dist && sha256sum matrix-nctalk-linux-* > checksums.txt && cat checksums.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## Container image
+
+            ```
+            docker pull ${{ env.IMAGE }}:${{ github.ref_name }}
+            ```
+
+            Built for `linux/amd64` and `linux/arm64`.
+
+            > Back up the bridge database before upgrading. This is 0.x software
+            > and schema migrations are forward-only.

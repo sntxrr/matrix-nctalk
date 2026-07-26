@@ -1,0 +1,45 @@
+# Running matrix-nctalk against an existing Synapse and Nextcloud.
+#
+# For a throwaway stack that brings up Synapse, Nextcloud and Talk as well, see
+# docker-compose.dev.yaml instead — that one is for working on the bridge, this
+# one is for running it.
+
+services:
+  matrix-nctalk:
+    image: ghcr.io/sntxrr/matrix-nctalk:latest
+    restart: unless-stopped
+
+    volumes:
+      # Holds config.yaml, registration.yaml and, unless Postgres is configured,
+      # the sqlite database. Back it up.
+      - ./data:/data
+
+    ports:
+      # This one port carries two inbound paths: appservice transactions from
+      # your homeserver, and bot webhooks from Nextcloud. Both have to reach it.
+      #
+      # If Nextcloud is on another host, this needs to be reachable from there —
+      # which also exposes the appservice endpoints, so put it behind a reverse
+      # proxy with TLS. The appservice side is guarded by hs_token and the
+      # webhook by Talk's HMAC, but neither is a reason to publish it wider than
+      # necessary. If Nextcloud and the homeserver are both local, bind to
+      # 127.0.0.1 and expose nothing.
+      - "29337:29337"
+
+    environment:
+      # The uid the bridge runs as, and what /data gets chowned to on start.
+      UID: 1337
+      GID: 1337
+
+    # Keeping secrets out of config.yaml: set `env_config_prefix: NCTALK_` in
+    # the config, then any field can come from the environment, and a _FILE
+    # suffix reads it from a path instead — which is how Docker secrets work.
+    #
+    # secrets:
+    #   - bot_secret
+    # environment:
+    #   NCTALK_NETWORK__BOT_SECRET_FILE: /run/secrets/bot_secret
+
+# secrets:
+#   bot_secret:
+#     file: ./secrets/bot_secret

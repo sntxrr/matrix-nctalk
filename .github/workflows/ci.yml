@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l pkg cmd)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet -tags goolm ./...
+
+      # The race detector is what caught the resync loop racing with the test
+      # recorder, so it runs on every change rather than only on release.
+      - name: Test
+        run: go test -tags goolm -race ./...
+
+      # Fails below 85%, the floor the project holds itself to.
+      - name: Coverage
+        run: make cover
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Building the image on every change keeps the Dockerfile from rotting
+      # between releases. Nothing is pushed here.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}

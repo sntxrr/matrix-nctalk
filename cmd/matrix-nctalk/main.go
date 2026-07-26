@@ -18,9 +18,11 @@
 package main
 
 import (
+	"os"
+
 	"maunium.net/go/mautrix/bridgev2/matrix/mxmain"
 
-	"github.com/sntxrr/matrix-nextcloud/pkg/connector"
+	"github.com/sntxrr/matrix-nctalk/pkg/connector"
 )
 
 // Build-time metadata, injected with -ldflags.
@@ -33,10 +35,16 @@ var (
 var version = "0.1.0"
 
 func main() {
+	// Handled before the bridge's own flag parsing, which does not know about
+	// subcommands and would reject this one as an unknown argument.
+	if len(os.Args) > 1 && os.Args[1] == "bot-install" {
+		os.Exit(runBotInstall(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	m := mxmain.BridgeMain{
 		Name:        "matrix-nctalk",
 		Description: "A Matrix bridge for Nextcloud Talk",
-		URL:         "https://github.com/sntxrr/matrix-nextcloud",
+		URL:         "https://github.com/sntxrr/matrix-nctalk",
 		Version:     version,
 		Connector:   &connector.NCTalkConnector{},
 	}
