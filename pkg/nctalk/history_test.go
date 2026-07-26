@@ -101,6 +101,19 @@ func TestGetHistoryReadsForwards(t *testing.T) {
 	if query.Get("timeout") != "0" {
 		t.Errorf("timeout = %q, want 0 so the call returns immediately", query.Get("timeout"))
 	}
+	// This direction is where the side effects actually bite: spreed only honours
+	// setReadMarker when lookIntoFuture is set, so a catch-up read is exactly the
+	// call that would drag the user's read marker forward over messages they have
+	// not seen, and clear the notifications telling them so.
+	for key, value := range map[string]string{
+		"setReadMarker":           "0",
+		"markNotificationsAsRead": "0",
+		"noStatusUpdate":          "1",
+	} {
+		if got := query.Get(key); got != value {
+			t.Errorf("query %s = %q, want %q", key, got, value)
+		}
+	}
 }
 
 func TestGetHistoryClampsLimit(t *testing.T) {

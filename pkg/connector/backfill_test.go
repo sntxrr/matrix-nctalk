@@ -47,6 +47,11 @@ type chatRequest struct {
 type fakeHistory struct {
 	// messages are in chronological order, oldest first.
 	messages []nctalk.Message
+	// withheld are message IDs Talk counts towards the page and the cursor but
+	// does not return, as it does for anything expired or invisible to the
+	// reader. A page of nothing but these comes back as an empty list with a
+	// cursor, not as the 304 that means the history has ended.
+	withheld map[int64]bool
 	// reactions answers the reaction endpoint, keyed by message ID.
 	reactions map[int64]nctalk.ReactionList
 	// conversation is what the room endpoint reports.
@@ -106,27 +111,38 @@ func (f *fakeHistory) serveChat(t *testing.T, w http.ResponseWriter, r *http.Req
 	f.requests = append(f.requests, chatRequest{LastKnown: lastKnown, Limit: limit, Future: future})
 	f.mu.Unlock()
 
-	var page []nctalk.Message
+	// Talk selects the page first and filters it afterwards, so the cursor comes
+	// from what it considered rather than from what it sends back.
+	var considered []nctalk.Message
 	if future {
 		for _, msg := range f.messages {
-			if msg.ID > lastKnown && len(page) < limit {
-				page = append(page, msg)
+			if msg.ID > lastKnown && len(considered) < limit {
+				considered = append(considered, msg)
 			}
 		}
 	} else {
-		for i := len(f.messages) - 1; i >= 0 && len(page) < limit; i-- {
+		for i := len(f.messages) - 1; i >= 0 && len(considered) < limit; i-- {
 			if lastKnown == 0 || f.messages[i].ID < lastKnown {
-				page = append(page, f.messages[i])
+				considered = append(considered, f.messages[i])
 			}
 		}
 	}
 
-	if len(page) == 0 {
+	// Only an empty selection is the end of the history. A selection that was
+	// entirely withheld is a 200 carrying an empty list and a live cursor.
+	if len(considered) == 0 {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	w.Header().Set(nctalk.HeaderChatLastGiven, strconv.FormatInt(page[len(page)-1].ID, 10))
-	writeOCS(t, w, page)
+
+	visible := []nctalk.Message{}
+	for _, msg := range considered {
+		if !f.withheld[msg.ID] {
+			visible = append(visible, msg)
+		}
+	}
+	w.Header().Set(nctalk.HeaderChatLastGiven, strconv.FormatInt(considered[len(considered)-1].ID, 10))
+	writeOCS(t, w, visible)
 }
 
 // newBackfillClient wires a client to a conversation with the given history.
@@ -349,6 +365,74 @@ func TestFetchMessagesBackwardsKeepsPagingPastUnbridgeableMessages(t *testing.T)
 	}
 	if len(history.recorded()) < 2 {
 		t.Errorf("made %d requests, want more than one page to be read", len(history.recorded()))
+	}
+}
+
+func TestFetchMessagesBackwardsPagesPastMessagesTalkWithheld(t *testing.T) {
+	// Talk's cursor counts messages it did not return — expired, or invisible to
+	// the reader — so a page can carry a live cursor and an empty list. Stopping
+	// at the first empty page would lose everything older than it.
+	history := &fakeHistory{
+		messages: []nctalk.Message{
+			comment(10, "bob", "older than the gap"),
+			comment(11, "alice", "withheld one"),
+			comment(12, "bob", "withheld two"),
+		},
+		withheld: map[int64]bool{11: true, 12: true},
+	}
+	client, portal := newBackfillClient(t, history)
+
+	resp, err := client.FetchMessages(context.Background(), bridgev2.FetchMessagesParams{
+		Portal: portal,
+		Count:  2,
+	})
+	if err != nil {
+		t.Fatalf("FetchMessages failed: %v", err)
+	}
+	if got := bodies(resp.Messages); len(got) != 1 || got[0] != "older than the gap" {
+		t.Fatalf("bodies = %v, want the message beyond the withheld page", got)
+	}
+
+	requests := history.recorded()
+	if len(requests) != 2 {
+		t.Fatalf("made %d requests, want a second one following the cursor", len(requests))
+	}
+	// The second request must follow the cursor Talk gave, not the last message
+	// it actually returned — there was none.
+	if requests[1].LastKnown != 11 {
+		t.Errorf("second request read from %d, want the cursor 11", requests[1].LastKnown)
+	}
+}
+
+func TestFetchMessagesForwardsPagesPastMessagesTalkWithheld(t *testing.T) {
+	// The same trap in the catch-up direction, where giving up early would leave
+	// the newest messages permanently unbridged.
+	history := &fakeHistory{
+		messages: []nctalk.Message{
+			comment(10, "bob", "the anchor"),
+			comment(11, "alice", "withheld one"),
+			comment(12, "bob", "withheld two"),
+			comment(13, "alice", "newer than the gap"),
+		},
+		withheld: map[int64]bool{11: true, 12: true},
+	}
+	client, portal := newBackfillClient(t, history)
+
+	resp, err := client.FetchMessages(context.Background(), bridgev2.FetchMessagesParams{
+		Portal:        portal,
+		Forward:       true,
+		Count:         1,
+		AnchorMessage: &database.Message{ID: makeMessageID(client.host(), backfillToken, 10)},
+	})
+	if err != nil {
+		t.Fatalf("FetchMessages failed: %v", err)
+	}
+	if got := bodies(resp.Messages); len(got) != 1 || got[0] != "newer than the gap" {
+		t.Fatalf("bodies = %v, want the message beyond the withheld pages", got)
+	}
+	if len(history.recorded()) != 3 {
+		t.Errorf("made %d requests, want one per withheld page plus the one that found it",
+			len(history.recorded()))
 	}
 }
 
