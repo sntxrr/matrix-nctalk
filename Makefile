@@ -35,7 +35,11 @@ lint:
 fmt:
 	gofmt -w pkg cmd
 
+# The bridge refuses to overwrite an existing example config, so this removes it
+# first — otherwise the target silently does nothing and the committed example
+# drifts behind the code, which is worse than not having one.
 example-config: build
+	rm -f example-config.yaml
 	./matrix-nctalk -e -c example-config.yaml
 
 clean:

@@ -11,6 +11,22 @@ network:
     # prevents the bridge from enabling itself in individual conversations.
     bot_secret: ""
     
+    # Bridges serving more than one Nextcloud server need a secret per server, set
+    # here instead of above. Install the bot separately on each, with its own
+    # secret, and key them by hostname.
+    #
+    # This is not optional for multi-server setups. The header naming the sending
+    # server is not covered by the webhook signature, so a secret shared between
+    # servers lets any of them — or anyone who captures one signed request — forge
+    # events for the others. Choosing the secret by hostname is what makes the
+    # claimed sender verifiable.
+    #
+    # Setting this disables bot_secret entirely: a host with no entry here is
+    # refused rather than falling back to it.
+    bot_secrets: {}
+    #   cloud-a.example.com: "..."
+    #   cloud-b.example.com: "..."
+    
     # The display name the bot was installed with. The bridge uses this to find its
     # own bot ID in a conversation's bot list, so it must match the name above.
     bot_name: Matrix Bridge
@@ -21,7 +37,13 @@ network:
     auto_enable_bot: true
     
     # Nextcloud servers users are allowed to log into, as bare hostnames.
-    # Leave empty to allow any server.
+    # Leave empty to allow any public server.
+    #
+    # This list also marks internal servers as intentional. Logging in makes the
+    # bridge fetch a URL the user chose, so an address on a loopback, private or
+    # link-local network is refused unless it is named here — otherwise anyone
+    # permitted to use the bridge could aim it at the network it runs in. Naming a
+    # host here says you meant it; it does not open the rest of that network.
     allowed_servers: []
     
     # Relay messages from Matrix users who have not linked a Nextcloud account.
@@ -31,6 +53,21 @@ network:
     # assigned them, so they cannot later be edited, deleted, or replied to from
     # Matrix. A portal also needs a relay login set before this takes effect.
     relay_unlinked_users: false
+    
+    # Key used to encrypt the Nextcloud app passwords the bridge stores in its
+    # database. Left as "generate", a new one is created on first run and written
+    # back here, so credentials are never at rest in the clear.
+    #
+    # Back this up with the database and keep the two together. Losing it does not
+    # expose anything, but every user has to log in again. Changing it has the same
+    # effect.
+    #
+    # What this protects against is the database turning up somewhere on its own —
+    # a backup, a dump, a replica, a copied volume. It is not protection against
+    # someone who already has this file: for that, keep the key out of the config
+    # entirely by setting env_config_prefix above and passing the value in the
+    # environment, or in a file with the _FILE suffix. See the README.
+    credential_key: generate
     
     # How long to wait for the user to approve a Login Flow v2 request in their
     # browser. Nextcloud expires the handshake after 20 minutes.
