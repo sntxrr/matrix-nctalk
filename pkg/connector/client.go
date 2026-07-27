@@ -73,6 +73,11 @@ type NCTalkClient struct {
 	// syncMu guards syncCancel, which stops the periodic conversation resync.
 	syncMu     sync.Mutex
 	syncCancel context.CancelFunc
+
+	// credentialErr records that the stored app password could not be read,
+	// which Connect turns into a bad-credentials state rather than a stream of
+	// confusing authentication failures against Nextcloud.
+	credentialErr error
 }
 
 var _ bridgev2.NetworkAPI = (*NCTalkClient)(nil)
@@ -106,6 +111,17 @@ func (c *NCTalkClient) host() string {
 func (c *NCTalkClient) Connect(ctx context.Context) {
 	log := zerolog.Ctx(ctx)
 
+	if c.credentialErr != nil {
+		c.UserLogin.BridgeState.Send(status.BridgeState{
+			StateEvent: status.StateBadCredentials,
+			Error:      "nctalk-undecryptable-credential",
+			Message: "The stored Nextcloud app password could not be decrypted, which usually means " +
+				"network.credential_key changed. Log in again with `login`.",
+		})
+		log.Err(c.credentialErr).Msg("Cannot use this login until it is re-authenticated")
+		return
+	}
+
 	me, caps, err := c.Client.VerifyCredentials(ctx)
 	if err != nil {
 		if nctalk.IsUnauthorized(err) {
@@ -126,6 +142,7 @@ func (c *NCTalkClient) Connect(ctx context.Context) {
 
 	c.caps = caps
 	c.meta().Features = caps.Features
+	c.reencryptCredential(ctx)
 	if err := c.UserLogin.Save(ctx); err != nil {
 		log.Err(err).Msg("Failed to save cached Talk capabilities")
 	}
@@ -166,8 +183,29 @@ func (c *NCTalkClient) Disconnect() {
 }
 
 // IsLoggedIn implements bridgev2.NetworkAPI.
+//
+// The usable credential is the decrypted one held by the client, not the stored
+// form, so a login whose credential will not decrypt correctly reports itself
+// as logged out.
 func (c *NCTalkClient) IsLoggedIn() bool {
-	return c.meta().AppPassword != ""
+	return c.credentialErr == nil && c.Client.AppPassword != ""
+}
+
+// reencryptCredential rewrites a credential that predates the bridge storing
+// them encrypted. Connect saves the login anyway, so this rides along with it.
+func (c *NCTalkClient) reencryptCredential(ctx context.Context) {
+	meta := c.meta()
+	if meta.AppPassword == "" || isEncryptedCredential(meta.AppPassword) {
+		return
+	}
+	stored, err := c.Main.encryptCredential(c.Client.AppPassword)
+	if err != nil {
+		zerolog.Ctx(ctx).Warn().Err(err).
+			Msg("Could not encrypt the stored app password; it stays in the clear until this is fixed")
+		return
+	}
+	meta.AppPassword = stored
+	zerolog.Ctx(ctx).Info().Msg("Encrypted a Nextcloud app password that was stored in the clear")
 }
 
 // LogoutRemote implements bridgev2.NetworkAPI. It revokes the app password so
@@ -180,7 +218,7 @@ func (c *NCTalkClient) LogoutRemote(ctx context.Context) {
 		zerolog.Ctx(ctx).Err(err).Msg("Failed to build app password revocation request")
 		return
 	}
-	req.SetBasicAuth(c.meta().Username, c.meta().AppPassword)
+	req.SetBasicAuth(c.Client.Username, c.Client.AppPassword)
 	req.Header.Set("OCS-APIRequest", "true")
 	req.Header.Set("Accept", "application/json")
 
@@ -335,7 +373,7 @@ func (c *NCTalkClient) download(ctx context.Context, url string) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	req.SetBasicAuth(c.meta().Username, c.meta().AppPassword)
+	req.SetBasicAuth(c.Client.Username, c.Client.AppPassword)
 	req.Header.Set("OCS-APIRequest", "true")
 	req.Header.Set("User-Agent", nctalk.UserAgent)
 

@@ -118,14 +118,20 @@ func (nc *NCTalkConnector) LoadUserLogin(ctx context.Context, login *bridgev2.Us
 		return fmt.Errorf("login %s has incomplete credentials", login.ID)
 	}
 
-	client := nctalk.NewClient(meta.ServerURL, meta.Username, meta.AppPassword)
+	// The credential is decrypted here and lives in the client from now on; the
+	// metadata keeps only the encrypted form. A failure is carried rather than
+	// returned, so the login still loads and can report why it is unusable.
+	appPassword, credentialErr := nc.decryptCredential(meta.AppPassword)
+
+	client := nctalk.NewClient(meta.ServerURL, meta.Username, appPassword)
 	client.HTTP = nc.HTTP
 
 	login.Client = &NCTalkClient{
-		Main:      nc,
-		UserLogin: login,
-		Client:    client,
-		Bot:       nc.botClientFor(meta.ServerURL),
+		Main:          nc,
+		UserLogin:     login,
+		Client:        client,
+		Bot:           nc.botClientFor(meta.ServerURL),
+		credentialErr: credentialErr,
 	}
 	return nil
 }

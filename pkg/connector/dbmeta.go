@@ -26,7 +26,9 @@ type UserLoginMetadata struct {
 	ServerURL string `json:"server_url"`
 	// Username is the canonical Nextcloud user ID.
 	Username string `json:"username"`
-	// AppPassword authenticates OCS calls made on this user's behalf.
+	// AppPassword authenticates OCS calls made on this user's behalf, encrypted
+	// with network.credential_key. Read it through the client rather than from
+	// here: this is the stored form, and only the client holds the usable one.
 	AppPassword string `json:"app_password"`
 	// Features caches the server's Talk capability list so the bridge can
 	// decide which endpoints are safe to call without refetching every time.

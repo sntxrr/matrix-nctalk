@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"go.mau.fi/util/configupgrade"
+	"go.mau.fi/util/random"
 )
 
 //go:embed example-config.yaml
@@ -43,6 +44,11 @@ type Config struct {
 	AllowedServers []string `yaml:"allowed_servers"`
 
 	RelayUnlinkedUsers bool `yaml:"relay_unlinked_users"`
+
+	// CredentialKey encrypts the Nextcloud app passwords held in the bridge
+	// database. Generated on first run; keep it and back it up with the
+	// database, since losing it means every user has to log in again.
+	CredentialKey string `yaml:"credential_key"`
 
 	LoginTimeout time.Duration `yaml:"login_timeout"`
 
@@ -115,6 +121,14 @@ func upgradeConfig(helper configupgrade.Helper) {
 	helper.Copy(configupgrade.Bool, "auto_enable_bot")
 	helper.Copy(configupgrade.List, "allowed_servers")
 	helper.Copy(configupgrade.Bool, "relay_unlinked_users")
+	// Generated rather than left to the operator, so credentials are encrypted
+	// without anyone having to opt in. Same shape as the bridge's own
+	// pickle_key and shared_secret.
+	if key, ok := helper.Get(configupgrade.Str, "credential_key"); !ok || key == "" || key == "generate" {
+		helper.Set(configupgrade.Str, random.String(64), "credential_key")
+	} else {
+		helper.Copy(configupgrade.Str, "credential_key")
+	}
 	helper.Copy(configupgrade.Str, "login_timeout")
 	helper.Copy(configupgrade.Str, "sync_interval")
 }

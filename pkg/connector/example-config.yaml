@@ -52,6 +52,21 @@ allowed_servers: []
 # Matrix. A portal also needs a relay login set before this takes effect.
 relay_unlinked_users: false
 
+# Key used to encrypt the Nextcloud app passwords the bridge stores in its
+# database. Left as "generate", a new one is created on first run and written
+# back here, so credentials are never at rest in the clear.
+#
+# Back this up with the database and keep the two together. Losing it does not
+# expose anything, but every user has to log in again. Changing it has the same
+# effect.
+#
+# What this protects against is the database turning up somewhere on its own —
+# a backup, a dump, a replica, a copied volume. It is not protection against
+# someone who already has this file: for that, keep the key out of the config
+# entirely by setting env_config_prefix above and passing the value in the
+# environment, or in a file with the _FILE suffix. See the README.
+credential_key: generate
+
 # How long to wait for the user to approve a Login Flow v2 request in their
 # browser. Nextcloud expires the handshake after 20 minutes.
 login_timeout: 15m

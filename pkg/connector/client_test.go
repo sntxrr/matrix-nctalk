@@ -36,9 +36,17 @@ func TestClientIsLoggedIn(t *testing.T) {
 		t.Error("a login with an app password should be logged in")
 	}
 
-	client.meta().AppPassword = ""
+	// The stored form is encrypted, so what makes a login usable is the
+	// decrypted credential the client holds, not the field in the database.
+	client.Client.AppPassword = ""
 	if client.IsLoggedIn() {
 		t.Error("a login with no app password should not be logged in")
+	}
+
+	client.Client.AppPassword = "app-password"
+	client.credentialErr = ErrCredentialUndecryptable
+	if client.IsLoggedIn() {
+		t.Error("a login whose credential will not decrypt should not report itself logged in")
 	}
 }
 

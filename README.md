@@ -182,11 +182,57 @@ Talk sends each bot event once. A bridge that is down misses those messages perm
 
 Only conversations that already have a portal are resynced — a timer is not a reason to pull every conversation on the server into Matrix — and when several logins share a conversation, the one that owns the portal does the work.
 
+### Credential storage
+
+The bridge holds a Nextcloud app password per user, because acting as the real person is the whole point of it. Those are encrypted in the database with AES-256-GCM under `network.credential_key`, which is **generated on first run** — there is nothing to switch on:
+
+```yaml
+network:
+    # Written on first start. Back it up with the database.
+    credential_key: cS7nQ...64 characters...tW2v
+```
+
+A stored row then looks like this, and survives being handed to anyone:
+
+```json
+{"server_url":"https://cloud.example.com","username":"alice","app_password":"nctalk:v1:dikHYA4HBUBU…"}
+```
+
+**Be clear about what this protects against.** It protects the database turning up on its own: a backup, a `pg_dump`, a replica, a copied volume, a support bundle. It is *not* protection against someone who has both the database and the config, because that is where the key lives by default.
+
+To separate them, keep the key out of the config entirely. bridgev2 can read any config field from the environment, and a `_FILE` suffix reads it from a path — which is how Docker and Kubernetes secrets work:
+
+```yaml
+# config.yaml
+env_config_prefix: NCTALK_
+network:
+    credential_key: ""     # supplied at runtime instead
+```
+
+```yaml
+# docker-compose.yaml
+services:
+  matrix-nctalk:
+    environment:
+      NCTALK_NETWORK__CREDENTIAL_KEY_FILE: /run/secrets/credential_key
+    secrets:
+      - credential_key
+
+secrets:
+  credential_key:
+    file: ./secrets/credential_key
+```
+
+Two consequences worth knowing before you rely on it:
+
+- **Losing the key is not a leak, but it does cost every login.** Credentials that will not decrypt are reported as `BAD_CREDENTIALS` with a message naming the cause, and the affected user logs in again. The bridge makes no requests to Nextcloud with a credential it could not read, so there is no burst of authentication failures to debug.
+- **Upgrading is transparent.** Credentials written before this existed are read as-is and rewritten encrypted the first time each login connects, which is logged. Nothing needs migrating by hand.
+
 ## Security notes
 
 - **The webhook shares a listener with the appservice.** See [Deployment topology](#deployment-topology). Rate limiting belongs on the reverse proxy in front of it — deliberately not in the bridge, because Talk counts any non-200 against a bot's error budget and disables bots that accumulate them, so a bridge that shed load under attack would eventually be switched off by Nextcloud rather than merely slowed. What the bridge does do is reject a request with missing or replayed signature headers before reading its body, so the cheap floods stay cheap.
 - **Logging in makes the bridge fetch a URL the user chose.** Internal addresses are refused unless named in `allowed_servers`, and the login handshake's poll endpoint must share an origin with the server the user entered — otherwise a hostile server could point it anywhere and have the bridge poll it for the length of the login timeout. Neither check survives DNS rebinding; closing that needs address checking at connect time.
-- **App passwords are stored in the bridge database** in plain text, as with every mautrix bridge. Protect the database file accordingly; logging out revokes the password on the Nextcloud side.
+- **App passwords are encrypted at rest.** See [Credential storage](#credential-storage) for what that does and does not buy you.
 - **Conversation tokens appear in logs.** For a public conversation the token is also its join link, so bridge logs deserve the same handling as any other operational log.
 
 ## Status

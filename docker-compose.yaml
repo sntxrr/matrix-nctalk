@@ -31,15 +31,24 @@ services:
       UID: 1337
       GID: 1337
 
-    # Keeping secrets out of config.yaml: set `env_config_prefix: NCTALK_` in
-    # the config, then any field can come from the environment, and a _FILE
-    # suffix reads it from a path instead — which is how Docker secrets work.
+    # App passwords are encrypted in the database with network.credential_key,
+    # which is generated on first run. By default that key lives in config.yaml
+    # beside the database it protects, which guards against the database
+    # leaking on its own but not against both leaking together.
+    #
+    # To separate them, set `env_config_prefix: NCTALK_` in config.yaml, leave
+    # credential_key empty there, and pass it in here instead. Any config field
+    # works this way, and the _FILE suffix reads the value from a path.
     #
     # secrets:
+    #   - credential_key
     #   - bot_secret
     # environment:
+    #   NCTALK_NETWORK__CREDENTIAL_KEY_FILE: /run/secrets/credential_key
     #   NCTALK_NETWORK__BOT_SECRET_FILE: /run/secrets/bot_secret
 
 # secrets:
+#   credential_key:
+#     file: ./secrets/credential_key
 #   bot_secret:
 #     file: ./secrets/bot_secret

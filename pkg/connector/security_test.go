@@ -21,6 +21,8 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -31,6 +33,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"go.mau.fi/util/configupgrade"
+	"gopkg.in/yaml.v3"
 	"maunium.net/go/mautrix/bridgev2"
 
 	"github.com/sntxrr/matrix-nctalk/pkg/nctalk"
@@ -340,5 +344,211 @@ func TestSingleSecretStillHonoursTheAllowlist(t *testing.T) {
 	open := &Config{BotSecret: "s"}
 	if got := open.BotSecretFor("anything.example"); got != "s" {
 		t.Errorf("with no allowlist any backend should use the secret, got %q", got)
+	}
+}
+
+func TestStoredCredentialIsNotPlaintext(t *testing.T) {
+	// The property in one assertion: whatever ends up in the database row, the
+	// app password must not be findable in it.
+	const password = "sup3r-secret-app-password"
+	nc := &NCTalkConnector{Config: Config{CredentialKey: "a-generated-key-0123456789abcdef"}}
+
+	stored, err := nc.encryptCredential(password)
+	if err != nil {
+		t.Fatalf("encryptCredential failed: %v", err)
+	}
+	meta := &UserLoginMetadata{ServerURL: "https://cloud.example.com", Username: "alice", AppPassword: stored}
+	row, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	if strings.Contains(string(row), password) {
+		t.Fatalf("the app password is in the stored row:\n%s", row)
+	}
+
+	back, err := nc.decryptCredential(stored)
+	if err != nil {
+		t.Fatalf("decryptCredential failed: %v", err)
+	}
+	if back != password {
+		t.Errorf("round trip gave %q, want the original", back)
+	}
+}
+
+func TestCredentialEncryptionUsesAFreshNonce(t *testing.T) {
+	nc := &NCTalkConnector{Config: Config{CredentialKey: "a-generated-key-0123456789abcdef"}}
+
+	first, _ := nc.encryptCredential("same-password")
+	second, _ := nc.encryptCredential("same-password")
+	// Identical ciphertexts would tell anyone reading the table which users
+	// share a password, and would mean the nonce was being reused.
+	if first == second {
+		t.Error("encrypting the same value twice produced the same ciphertext")
+	}
+}
+
+func TestCredentialWillNotDecryptWithTheWrongKey(t *testing.T) {
+	original := &NCTalkConnector{Config: Config{CredentialKey: "the-original-key-0123456789abcdef"}}
+	stored, _ := original.encryptCredential("sup3r-secret-app-password")
+
+	rotated := &NCTalkConnector{Config: Config{CredentialKey: "a-different-key-0123456789abcdef"}}
+	if _, err := rotated.decryptCredential(stored); !errors.Is(err, ErrCredentialUndecryptable) {
+		t.Errorf("error = %v, want it reported as undecryptable", err)
+	}
+
+	// Tampering must fail the same way rather than yielding rubbish, since GCM
+	// authenticates as well as encrypts.
+	tampered := stored[:len(stored)-4] + "AAAA"
+	if _, err := original.decryptCredential(tampered); !errors.Is(err, ErrCredentialUndecryptable) {
+		t.Errorf("tampered value gave %v, want it refused", err)
+	}
+}
+
+func TestCredentialsWrittenBeforeEncryptionStillWork(t *testing.T) {
+	// A bridge upgraded from a version that stored these in the clear has to
+	// keep reading them, or every user is locked out by the upgrade itself.
+	nc := &NCTalkConnector{Config: Config{CredentialKey: "a-generated-key-0123456789abcdef"}}
+
+	got, err := nc.decryptCredential("legacy-plaintext-password")
+	if err != nil {
+		t.Fatalf("a legacy plaintext credential was refused: %v", err)
+	}
+	if got != "legacy-plaintext-password" {
+		t.Errorf("got %q, want the value unchanged", got)
+	}
+	if isEncryptedCredential("legacy-plaintext-password") {
+		t.Error("a plaintext value should not look encrypted")
+	}
+}
+
+func TestConfigUpgradeGeneratesACredentialKey(t *testing.T) {
+	// Secure by default means the operator never has to know this exists: an
+	// upgraded config that has never heard of the key comes back with one.
+	upgrade := func(existing string) Config {
+		t.Helper()
+		example, _, upgrader := (&NCTalkConnector{}).GetConfig()
+		var base, cfg yaml.Node
+		if err := yaml.Unmarshal([]byte(example), &base); err != nil {
+			t.Fatalf("example config does not parse: %v", err)
+		}
+		if err := yaml.Unmarshal([]byte(existing), &cfg); err != nil {
+			t.Fatalf("existing config does not parse: %v", err)
+		}
+		upgrader.DoUpgrade(configupgrade.NewHelper(&base, &cfg))
+		out, err := yaml.Marshal(&base)
+		if err != nil {
+			t.Fatalf("marshal upgraded config: %v", err)
+		}
+		var got Config
+		if err := yaml.Unmarshal(out, &got); err != nil {
+			t.Fatalf("upgraded config does not parse: %v", err)
+		}
+		return got
+	}
+
+	fresh := upgrade("bot_secret: s\n")
+	if fresh.CredentialKey == "" || fresh.CredentialKey == "generate" {
+		t.Fatalf("credential_key = %q, want a generated value", fresh.CredentialKey)
+	}
+	if len(fresh.CredentialKey) < 32 {
+		t.Errorf("generated key is only %d characters", len(fresh.CredentialKey))
+	}
+
+	// Two upgrades must not produce the same key.
+	if second := upgrade("bot_secret: s\n"); second.CredentialKey == fresh.CredentialKey {
+		t.Error("the generated key is not random")
+	}
+
+	// An existing key must survive, or every restart would lock users out.
+	kept := upgrade("bot_secret: s\ncredential_key: an-existing-key-that-must-be-kept\n")
+	if kept.CredentialKey != "an-existing-key-that-must-be-kept" {
+		t.Errorf("credential_key = %q, was not preserved", kept.CredentialKey)
+	}
+}
+
+func TestLoginMetadataNeverHoldsThePlaintext(t *testing.T) {
+	// The step where a password becomes a database row. Asserting on the row
+	// itself is the only way to be sure the encryption is not simply skipped on
+	// the way in, which is what the round-trip tests cannot see.
+	const password = "sup3r-secret-app-password"
+	nc := &NCTalkConnector{Config: Config{CredentialKey: "a-generated-key-0123456789abcdef"}}
+
+	meta, err := nc.newLoginMetadata("https://cloud.example.com", "alice", password, []string{"bots-v1"})
+	if err != nil {
+		t.Fatalf("newLoginMetadata failed: %v", err)
+	}
+	if meta.AppPassword == password {
+		t.Fatal("the login stored the app password as it was given")
+	}
+	if !isEncryptedCredential(meta.AppPassword) {
+		t.Errorf("stored credential %q is not marked as encrypted", meta.AppPassword)
+	}
+	row, _ := json.Marshal(meta)
+	if strings.Contains(string(row), password) {
+		t.Fatalf("the app password survives into the stored row:\n%s", row)
+	}
+	// And it has to come back out again, or the login is useless.
+	back, err := nc.decryptCredential(meta.AppPassword)
+	if err != nil || back != password {
+		t.Errorf("decrypt gave (%q, %v), want the original", back, err)
+	}
+}
+
+func TestCredentialsRefuseToWorkWithoutAKey(t *testing.T) {
+	// An operator can empty credential_key, and the honest response is to fail
+	// rather than quietly fall back to storing passwords in the clear.
+	none := &NCTalkConnector{Config: Config{}}
+
+	if _, err := none.encryptCredential("secret"); !errors.Is(err, ErrNoCredentialKey) {
+		t.Errorf("encrypt without a key gave %v, want it refused", err)
+	}
+	if _, err := none.newLoginMetadata("https://cloud.example.com", "alice", "secret", nil); !errors.Is(err, ErrNoCredentialKey) {
+		t.Errorf("a login without a key gave %v, want it refused", err)
+	}
+	// Reading an already-encrypted value without a key fails the same way,
+	// while an empty credential and a legacy plaintext one still pass through.
+	if _, err := none.decryptCredential(credentialPrefix + "AAAA"); !errors.Is(err, ErrNoCredentialKey) {
+		t.Errorf("decrypt without a key gave %v, want it refused", err)
+	}
+	if got, err := none.encryptCredential(""); got != "" || err != nil {
+		t.Errorf("an empty credential gave (%q, %v), want it left alone", got, err)
+	}
+	if got, err := none.decryptCredential(""); got != "" || err != nil {
+		t.Errorf("an empty stored value gave (%q, %v), want it left alone", got, err)
+	}
+	// The key is checked before the payload, so an unreadable one needs a
+	// connector that has a key in order to reach that branch at all.
+	withKey := &NCTalkConnector{Config: Config{CredentialKey: "a-generated-key-0123456789abcdef"}}
+	if _, err := withKey.decryptCredential(credentialPrefix + "!!not base64!!"); !errors.Is(err, ErrCredentialUndecryptable) {
+		t.Errorf("unreadable base64 gave %v", err)
+	}
+	if _, err := withKey.decryptCredential(credentialPrefix + "AAAA"); !errors.Is(err, ErrCredentialUndecryptable) {
+		t.Errorf("a value too short to hold a nonce gave %v", err)
+	}
+}
+
+func TestReencryptCredentialUpgradesInPlace(t *testing.T) {
+	client := newTestClient(t, "https://cloud.example.com", "alice", Config{
+		CredentialKey: "a-generated-key-0123456789abcdef",
+	})
+	// As a login written before the bridge encrypted them looks on disk.
+	client.meta().AppPassword = "legacy-plaintext-password"
+	client.Client.AppPassword = "legacy-plaintext-password"
+
+	client.reencryptCredential(context.Background())
+
+	stored := client.meta().AppPassword
+	if !isEncryptedCredential(stored) {
+		t.Fatalf("stored credential is still %q", stored)
+	}
+	back, err := client.Main.decryptCredential(stored)
+	if err != nil || back != "legacy-plaintext-password" {
+		t.Errorf("decrypt gave (%q, %v), want the original", back, err)
+	}
+
+	// Running again must not encrypt the ciphertext a second time.
+	client.reencryptCredential(context.Background())
+	if client.meta().AppPassword != stored {
+		t.Error("an already-encrypted credential was rewritten")
 	}
 }

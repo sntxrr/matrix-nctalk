@@ -263,6 +263,11 @@ func (l *NCTalkLogin) finish(ctx context.Context, username, appPassword string) 
 		return nil, err
 	}
 
+	metadata, err := l.Main.newLoginMetadata(l.serverURL, me.ID, appPassword, caps.Features)
+	if err != nil {
+		return nil, err
+	}
+
 	loginID := makeUserLoginID(host, me.ID)
 	ul, err := l.User.NewLogin(ctx, &database.UserLogin{
 		ID:         loginID,
@@ -272,12 +277,7 @@ func (l *NCTalkLogin) finish(ctx context.Context, username, appPassword string) 
 			Email:    me.Email,
 			Username: me.ID,
 		},
-		Metadata: &UserLoginMetadata{
-			ServerURL:   l.serverURL,
-			Username:    me.ID,
-			AppPassword: appPassword,
-			Features:    caps.Features,
-		},
+		Metadata: metadata,
 	}, &bridgev2.NewLoginParams{
 		DeleteOnConflict: true,
 	})
