@@ -27,6 +27,15 @@ if [ "${1:-}" = "bot-install" ]; then
 	exec matrix-nctalk bot-install -c "$CONFIG" "$@"
 fi
 
+# Anything that answers a question rather than running the bridge needs no
+# config, and `docker run <image> --version` printing setup instructions is a
+# poor first impression.
+case "${1:-}" in
+-v | --version | --version-json | -h | --help)
+	exec matrix-nctalk "$@"
+	;;
+esac
+
 if [ ! -f "$CONFIG" ]; then
 	matrix-nctalk -c "$CONFIG" -e
 	cat <<EOF
