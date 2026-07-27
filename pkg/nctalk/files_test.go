@@ -18,6 +18,7 @@ package nctalk
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -75,7 +76,10 @@ func TestAttachmentsAllowed(t *testing.T) {
 // segment is escaped individually and the separators are the only raw slashes.
 func TestDavPathEscaping(t *testing.T) {
 	client := NewClient("https://cloud.example.com", "user name", "pw")
-	got := client.davPath("/Talk/holiday photo #1?.png")
+	got, err := client.davPath("/Talk/holiday photo #1?.png")
+	if err != nil {
+		t.Fatalf("davPath failed: %v", err)
+	}
 	want := "https://cloud.example.com/remote.php/dav/files/user%20name/Talk/holiday%20photo%20%231%3F.png"
 	if got != want {
 		t.Errorf("davPath =\n  %s\nwant\n  %s", got, want)
@@ -330,5 +334,32 @@ func TestShareFileRejection(t *testing.T) {
 	})
 	if !IsForbidden(err) {
 		t.Fatalf("IsForbidden(%v) = false", err)
+	}
+}
+
+func TestDavPathRefusesTraversal(t *testing.T) {
+	client := NewClient("https://cloud.example.com", "alice", "pw")
+
+	for _, path := range []string{
+		"../../../etc/passwd",
+		"Talk/../../bob/secret.txt",
+		"..",
+		"/../Talk/note.txt",
+	} {
+		// Escaping does not defuse "..": url.PathEscape leaves dots alone and
+		// Go sends the path unnormalised, so refusing it here is what keeps the
+		// server from being the only thing deciding where the request lands.
+		if _, err := client.davPath(path); !errors.Is(err, ErrUnsafeFilePath) {
+			t.Errorf("davPath(%q) error = %v, want it refused", path, err)
+		}
+	}
+
+	// A "." segment is meaningless rather than dangerous, so it is dropped.
+	got, err := client.davPath("./Talk/./note.txt")
+	if err != nil {
+		t.Fatalf("davPath failed: %v", err)
+	}
+	if want := "https://cloud.example.com/remote.php/dav/files/alice/Talk/note.txt"; got != want {
+		t.Errorf("davPath = %q, want %q", got, want)
 	}
 }

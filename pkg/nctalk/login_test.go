@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,16 +31,20 @@ import (
 )
 
 func TestStartLoginFlow(t *testing.T) {
-	var gotPath, gotUA string
+	var gotPath, gotUA, srvURL string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotUA = r.Header.Get("User-Agent")
+		// A real Nextcloud names itself here. A server that named somewhere
+		// else would be refused; TestStartLoginFlowRejectsForeignEndpoints
+		// covers that.
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"poll":  map[string]string{"token": "polltoken", "endpoint": "https://cloud.example.com/index.php/login/v2/poll"},
-			"login": "https://cloud.example.com/index.php/login/v2/flow/abc",
+			"poll":  map[string]string{"token": "polltoken", "endpoint": srvURL + "/index.php/login/v2/poll"},
+			"login": srvURL + "/index.php/login/v2/flow/abc",
 		})
 	}))
 	defer srv.Close()
+	srvURL = srv.URL
 
 	init, err := StartLoginFlow(context.Background(), srv.Client(), srv.URL)
 	if err != nil {
@@ -273,5 +278,67 @@ func TestVerifyCredentialsRejectsMissingUserID(t *testing.T) {
 
 	if _, _, err := client.VerifyCredentials(context.Background()); err == nil {
 		t.Fatal("expected an error when the server returns no user ID")
+	}
+}
+
+func TestStartLoginFlowRejectsForeignEndpoints(t *testing.T) {
+	// A hostile server answering the handshake can name any URL it likes. The
+	// poll endpoint is the dangerous one — the bridge posts to it every couple
+	// of seconds until the login times out — so pointing it at an internal
+	// address would turn one typed URL into a sustained request generator.
+	for _, tc := range []struct {
+		name string
+		poll string
+		show string
+	}{
+		{
+			name: "poll endpoint aimed at cloud metadata",
+			poll: "http://169.254.169.254/latest/meta-data/",
+			show: "%s/index.php/login/v2/flow/abc",
+		},
+		{
+			name: "login URL aimed at a phishing page",
+			poll: "%s/index.php/login/v2/poll",
+			show: "https://not-your-nextcloud.example/login",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var srvURL string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sub := func(s string) string {
+					if strings.Contains(s, "%s") {
+						return fmt.Sprintf(s, srvURL)
+					}
+					return s
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"poll":  map[string]string{"token": "polltoken", "endpoint": sub(tc.poll)},
+					"login": sub(tc.show),
+				})
+			}))
+			defer srv.Close()
+			srvURL = srv.URL
+
+			_, err := StartLoginFlow(context.Background(), srv.Client(), srv.URL)
+			if err == nil {
+				t.Fatal("the handshake was accepted")
+			}
+			if !errors.Is(err, ErrForeignLoginEndpoint) {
+				t.Errorf("error %v does not identify the cause", err)
+			}
+		})
+	}
+}
+
+func TestPollLoginRechecksTheEndpoint(t *testing.T) {
+	// An init assembled by hand, or mutated after the handshake, must not get
+	// a free pass just because StartLoginFlow already looked.
+	init := &LoginFlowInit{Server: "https://cloud.example.com"}
+	init.Poll.Token = "polltoken"
+	init.Poll.Endpoint = "http://169.254.169.254/latest/meta-data/"
+
+	_, err := PollLogin(context.Background(), http.DefaultClient, init)
+	if !errors.Is(err, ErrForeignLoginEndpoint) {
+		t.Errorf("PollLogin error = %v, want it refused as foreign", err)
 	}
 }

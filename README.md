@@ -168,11 +168,26 @@ Talk's history is also dense with system messages that narrate things the bridge
 
 Paging *further* back on demand — bridgev2's backwards backfill queue — is implemented, but only runs on a homeserver that supports batch sending. Synapse does not, so there the bridge fills a new room with `backfill.max_initial_messages` and goes no deeper.
 
+### The header naming the sender is not signed
+
+Talk signs `HMAC-SHA256(random || body)` — the body and a nonce, and nothing else. `X-Nextcloud-Talk-Backend`, which names the server the event came from, is **outside the signature**. Left alone that means anyone who captures one signed webhook can replay it at a different tenant, and a secret shared between two Nextcloud servers lets either of them speak for the other.
+
+The bridge closes this by choosing the verification secret from the host that header names, so a forged or re-targeted header selects a different secret and the signature stops matching. That is why `bot_secrets` exists and why setting it disables the single `bot_secret` completely: a fallback for unlisted hosts would hand the whole thing back.
+
+Accepted randoms are also remembered for fifteen minutes, so a captured request cannot simply be sent again. Replaying a `Create` was never that interesting — bridgev2 deduplicates on message ID — but a replayed reaction cost a fresh fetch against Nextcloud every time.
+
 ### Nothing retries a missed webhook
 
 Talk sends each bot event once. A bridge that is down misses those messages permanently, and no later event refers back to them. So each login resyncs its bridged conversations on a timer (`sync_interval`, default hourly) and immediately on connect: room name, topic, avatar and members, plus the conversation's last activity time, which is what tells bridgev2 to pull in anything newer than the last bridged message. Recovering missed messages also needs `backfill.enabled: true`, which is off in the default config.
 
 Only conversations that already have a portal are resynced — a timer is not a reason to pull every conversation on the server into Matrix — and when several logins share a conversation, the one that owns the portal does the work.
+
+## Security notes
+
+- **The webhook shares a listener with the appservice.** See [Deployment topology](#deployment-topology). Rate limiting belongs on the reverse proxy in front of it — deliberately not in the bridge, because Talk counts any non-200 against a bot's error budget and disables bots that accumulate them, so a bridge that shed load under attack would eventually be switched off by Nextcloud rather than merely slowed. What the bridge does do is reject a request with missing or replayed signature headers before reading its body, so the cheap floods stay cheap.
+- **Logging in makes the bridge fetch a URL the user chose.** Internal addresses are refused unless named in `allowed_servers`, and the login handshake's poll endpoint must share an origin with the server the user entered — otherwise a hostile server could point it anywhere and have the bridge poll it for the length of the login timeout. Neither check survives DNS rebinding; closing that needs address checking at connect time.
+- **App passwords are stored in the bridge database** in plain text, as with every mautrix bridge. Protect the database file accordingly; logging out revokes the password on the Nextcloud side.
+- **Conversation tokens appear in logs.** For a public conversation the token is also its join link, so bridge logs deserve the same handling as any other operational log.
 
 ## Status
 

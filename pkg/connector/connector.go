@@ -46,6 +46,12 @@ type NCTalkConnector struct {
 	// queue carries verified webhook events from the HTTP handler to the
 	// workers, keeping the handler within Talk's five second budget.
 	queue chan *pendingEvent
+	// nonces remembers recently seen webhook randoms, so a captured request
+	// cannot be replayed.
+	nonces *nonceCache
+	// dnsResolver overrides name lookup when checking where a server address
+	// points. It is nil in production, where the system resolver is used.
+	dnsResolver hostResolver
 }
 
 var _ bridgev2.NetworkConnector = (*NCTalkConnector)(nil)
@@ -58,8 +64,8 @@ func (nc *NCTalkConnector) Init(bridge *bridgev2.Bridge) {
 
 // Start implements bridgev2.NetworkConnector.
 func (nc *NCTalkConnector) Start(ctx context.Context) error {
-	if nc.Config.BotSecret == "" {
-		return fmt.Errorf("network.bot_secret is not set; run `matrix-nctalk bot-install` for the " +
+	if !nc.Config.HasBotSecret() {
+		return fmt.Errorf("neither network.bot_secret nor network.bot_secrets is set; run `matrix-nctalk bot-install` for the " +
 			"`occ talk:bot:install` command to run on the Nextcloud server, then copy the shared secret into the config")
 	}
 	if nc.Config.BotName == "" {
@@ -119,14 +125,19 @@ func (nc *NCTalkConnector) LoadUserLogin(ctx context.Context, login *bridgev2.Us
 		Main:      nc,
 		UserLogin: login,
 		Client:    client,
-		Bot:       nctalk.NewBotClient(meta.ServerURL, nc.Config.BotSecret, nc.HTTP),
+		Bot:       nc.botClientFor(meta.ServerURL),
 	}
 	return nil
 }
 
-// botClientFor returns a bot client for the given Nextcloud base URL.
+// botClientFor returns a bot client for the given Nextcloud base URL, signing
+// with the secret configured for that host.
 func (nc *NCTalkConnector) botClientFor(baseURL string) *nctalk.BotClient {
-	return nctalk.NewBotClient(baseURL, nc.Config.BotSecret, nc.HTTP)
+	host, err := hostOf(baseURL)
+	if err != nil {
+		host = baseURL
+	}
+	return nctalk.NewBotClient(baseURL, nc.Config.BotSecretFor(host), nc.HTTP)
 }
 
 // loginTimeout returns the configured Login Flow v2 timeout, with a default.

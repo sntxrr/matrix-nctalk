@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -63,30 +64,47 @@ func (c *Capabilities) AttachmentsAllowed() bool {
 	return !ok || allowed
 }
 
+// ErrUnsafeFilePath means a path tried to walk out of the user's own files.
+var ErrUnsafeFilePath = errors.New("nctalk: file path escapes the user's files")
+
 // davPath builds the WebDAV URL for a path in the authenticated user's files.
 //
 // Each segment is escaped separately so that the slashes separating them
 // survive while everything else — spaces, hashes, question marks — does not
 // change the meaning of the URL.
-func (c *Client) davPath(filePath string) string {
+//
+// A ".." segment is refused rather than escaped, because escaping does not
+// neuter it: url.PathEscape leaves dots alone, Go sends the path unnormalised,
+// and the server is then the only thing deciding where the request lands.
+// Nextcloud does authorise per user, so this is a second line rather than the
+// first, but the paths here come from API responses and message contents and
+// have no business containing one.
+func (c *Client) davPath(filePath string) (string, error) {
 	var b strings.Builder
 	b.WriteString(c.BaseURL)
 	b.WriteString("/remote.php/dav/files/")
 	b.WriteString(url.PathEscape(c.Username))
 	for _, segment := range strings.Split(strings.Trim(filePath, "/"), "/") {
-		if segment == "" {
+		if segment == "" || segment == "." {
 			continue
+		}
+		if segment == ".." {
+			return "", fmt.Errorf("%w: %q", ErrUnsafeFilePath, filePath)
 		}
 		b.WriteByte('/')
 		b.WriteString(url.PathEscape(segment))
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 // dav issues an authenticated WebDAV request and returns the response, which
 // the caller must close.
 func (c *Client) dav(ctx context.Context, method, filePath string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.davPath(filePath), body)
+	davURL, err := c.davPath(filePath)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, davURL, body)
 	if err != nil {
 		return nil, fmt.Errorf("build WebDAV request: %w", err)
 	}
@@ -149,7 +167,11 @@ func (c *Client) FileExists(ctx context.Context, filePath string) (bool, error) 
 // Callers that must not clobber an existing file should pick a free name with
 // FreeFilePath first; WebDAV PUT overwrites silently.
 func (c *Client) UploadFile(ctx context.Context, filePath string, data []byte, mimeType string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.davPath(filePath), bytes.NewReader(data))
+	davURL, err := c.davPath(filePath)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, davURL, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("build upload request: %w", err)
 	}

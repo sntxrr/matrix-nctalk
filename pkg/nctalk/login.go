@@ -35,6 +35,38 @@ type LoginFlowInit struct {
 	} `json:"poll"`
 	// Login is the URL the user must open in a browser to grant access.
 	Login string `json:"login"`
+
+	// Server is the base URL the handshake was started against, retained so the
+	// endpoints the server chose can be checked against it. Not part of the
+	// wire format.
+	Server string `json:"-"`
+}
+
+// ErrForeignLoginEndpoint means a server pointed the handshake somewhere other
+// than itself.
+var ErrForeignLoginEndpoint = errors.New("nctalk: login handshake points at a different server")
+
+// checkSameOrigin reports whether a URL the server handed back addresses the
+// same place the handshake was started against.
+//
+// Without this, the poll endpoint is an arbitrary URL of the server's choosing
+// that the bridge will then POST to every couple of seconds for the length of
+// the login timeout — which turns "I typed a server address" into a sustained
+// request generator aimed wherever that server likes.
+func checkSameOrigin(base, candidate string) error {
+	b, err := url.Parse(base)
+	if err != nil {
+		return fmt.Errorf("%w: unusable server URL %q", ErrForeignLoginEndpoint, base)
+	}
+	c, err := url.Parse(candidate)
+	if err != nil {
+		return fmt.Errorf("%w: unusable URL %q", ErrForeignLoginEndpoint, candidate)
+	}
+	if !strings.EqualFold(b.Scheme, c.Scheme) || !strings.EqualFold(b.Host, c.Host) {
+		return fmt.Errorf("%w: expected %s://%s, got %s://%s",
+			ErrForeignLoginEndpoint, b.Scheme, b.Host, c.Scheme, c.Host)
+	}
+	return nil
 }
 
 // LoginFlowResult is the credential set produced by a completed handshake.
@@ -67,6 +99,20 @@ func StartLoginFlow(ctx context.Context, httpClient *http.Client, baseURL string
 	if out.Poll.Token == "" || out.Poll.Endpoint == "" || out.Login == "" {
 		return nil, fmt.Errorf("start login flow: server returned an incomplete handshake")
 	}
+	// Both URLs come from the server's own response. The poll endpoint is the
+	// one that matters — the bridge calls it repeatedly — but the login URL is
+	// shown to the user, so a server that redirected it elsewhere would be
+	// phishing through the bridge's own instructions.
+	//
+	// A Nextcloud whose overwrite.cli.url differs from the address the user
+	// typed will trip this. That is the intended behaviour: the alternative is
+	// following whatever URL any server names.
+	for what, candidate := range map[string]string{"poll endpoint": out.Poll.Endpoint, "login URL": out.Login} {
+		if err := checkSameOrigin(baseURL, candidate); err != nil {
+			return nil, fmt.Errorf("start login flow: %s: %w", what, err)
+		}
+	}
+	out.Server = baseURL
 	return &out, nil
 }
 
@@ -77,6 +123,14 @@ func PollLogin(ctx context.Context, httpClient *http.Client, init *LoginFlowInit
 	c := &Client{HTTP: httpClient}
 	if c.HTTP == nil {
 		c.HTTP = &http.Client{Timeout: 30 * time.Second}
+	}
+
+	// Re-checked here rather than trusted from StartLoginFlow, so that an init
+	// assembled by hand cannot skip it.
+	if init.Server != "" {
+		if err := checkSameOrigin(init.Server, init.Poll.Endpoint); err != nil {
+			return nil, fmt.Errorf("poll login: %w", err)
+		}
 	}
 
 	form := url.Values{"token": {init.Poll.Token}}

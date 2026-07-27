@@ -38,9 +38,11 @@ import (
 // `occ talk:bot:install` is <public address>/_nctalk/webhook.
 const webhookPath = "/_nctalk"
 
-// maxWebhookBody bounds how much the handler will read. Talk caps chat messages
-// at 32000 characters; 1 MiB leaves ample room for rich object parameters.
-const maxWebhookBody = 1 << 20
+// maxWebhookBody bounds how much the handler will read, and with it how much
+// work an unauthenticated request can cost: the body has to be read and hashed
+// before the signature over it can be checked. Talk caps chat messages at 32000
+// characters, so 256 KiB still leaves generous room for rich object parameters.
+const maxWebhookBody = 256 << 10
 
 // webhookWorkers is how many events are processed concurrently. Ordering does
 // not depend on this: events carry the Talk message ID as their stream order.
@@ -76,6 +78,7 @@ func (nc *NCTalkConnector) registerWebhook(ctx context.Context) error {
 	}
 
 	nc.router = newLoginRouter(nc.Bridge)
+	nc.nonces = newNonceCache(defaultNonceRetention, defaultNonceMaxSize)
 	nc.queue = make(chan *pendingEvent, webhookQueueSize)
 	for range webhookWorkers {
 		go nc.processEvents()
@@ -100,24 +103,16 @@ func (nc *NCTalkConnector) registerWebhook(ctx context.Context) error {
 func (nc *NCTalkConnector) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	log := nc.Bridge.Log.With().Str("component", "talk webhook").Logger()
 
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBody))
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to read webhook body")
-		http.Error(w, "could not read body", http.StatusBadRequest)
-		return
-	}
-
 	random := r.Header.Get(nctalk.HeaderRandom)
 	signature := r.Header.Get(nctalk.HeaderSignature)
 	backend := r.Header.Get(nctalk.HeaderBackend)
 
-	// The signature covers the exact bytes received, so this must happen before
-	// any decoding.
-	if err := nctalk.VerifyWebhook(random, signature, nc.Config.BotSecret, body); err != nil {
-		log.Warn().Err(err).
-			Str("backend", backend).
-			Msg("Rejected webhook with invalid signature")
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
+	// Everything that can be decided from the headers is decided before the body
+	// is read, so an unauthenticated flood costs a header parse rather than a
+	// read plus a hash over it.
+	if random == "" || signature == "" {
+		log.Debug().Msg("Rejected webhook with no signature headers")
+		http.Error(w, "missing signature headers", http.StatusUnauthorized)
 		return
 	}
 
@@ -125,6 +120,44 @@ func (nc *NCTalkConnector) handleWebhook(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		log.Warn().Err(err).Str("backend", backend).Msg("Rejected webhook with unusable backend header")
 		http.Error(w, "invalid backend", http.StatusBadRequest)
+		return
+	}
+
+	// The backend header is not covered by the signature, so it cannot be
+	// trusted on its own — but choosing the secret by the host it names makes it
+	// verifiable: a forged or re-targeted header selects a different secret and
+	// the signature then fails. This is also what stops one Nextcloud server
+	// speaking for another when the bridge serves several.
+	secret := nc.Config.BotSecretFor(host)
+	if secret == "" {
+		log.Warn().Str("host", host).
+			Msg("Rejected webhook from a Nextcloud host with no configured bot secret")
+		http.Error(w, "unknown backend", http.StatusUnauthorized)
+		return
+	}
+
+	// A replayed request carries a random Talk has already used. Checking that
+	// before reading the body keeps a replay flood cheap too.
+	if !nc.nonces.Accept(random) {
+		log.Warn().Str("host", host).Msg("Rejected replayed webhook")
+		http.Error(w, "replayed request", http.StatusUnauthorized)
+		return
+	}
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBody))
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to read webhook body")
+		http.Error(w, "could not read body", http.StatusBadRequest)
+		return
+	}
+
+	// The signature covers the exact bytes received, so this must happen before
+	// any decoding.
+	if err := nctalk.VerifyWebhook(random, signature, secret, body); err != nil {
+		log.Warn().Err(err).
+			Str("backend", backend).
+			Msg("Rejected webhook with invalid signature")
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
 

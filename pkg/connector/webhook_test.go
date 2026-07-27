@@ -38,13 +38,14 @@ const (
 )
 
 // newTestConnector builds the minimum connector the webhook handler touches:
-// a logger, the bot secret, and the event queue.
+// a logger, the bot secret, the event queue and the replay cache.
 func newTestConnector(t *testing.T, queueSize int) *NCTalkConnector {
 	t.Helper()
 	return &NCTalkConnector{
 		Bridge: &bridgev2.Bridge{Log: zerolog.Nop()},
 		Config: Config{BotSecret: testBotSecret},
 		queue:  make(chan *pendingEvent, queueSize),
+		nonces: newNonceCache(defaultNonceRetention, defaultNonceMaxSize),
 	}
 }
 

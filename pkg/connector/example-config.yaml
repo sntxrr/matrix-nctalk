@@ -9,6 +9,22 @@
 # prevents the bridge from enabling itself in individual conversations.
 bot_secret: ""
 
+# Bridges serving more than one Nextcloud server need a secret per server, set
+# here instead of above. Install the bot separately on each, with its own
+# secret, and key them by hostname.
+#
+# This is not optional for multi-server setups. The header naming the sending
+# server is not covered by the webhook signature, so a secret shared between
+# servers lets any of them — or anyone who captures one signed request — forge
+# events for the others. Choosing the secret by hostname is what makes the
+# claimed sender verifiable.
+#
+# Setting this disables bot_secret entirely: a host with no entry here is
+# refused rather than falling back to it.
+bot_secrets: {}
+#   cloud-a.example.com: "..."
+#   cloud-b.example.com: "..."
+
 # The display name the bot was installed with. The bridge uses this to find its
 # own bot ID in a conversation's bot list, so it must match the name above.
 bot_name: Matrix Bridge
@@ -19,7 +35,13 @@ bot_name: Matrix Bridge
 auto_enable_bot: true
 
 # Nextcloud servers users are allowed to log into, as bare hostnames.
-# Leave empty to allow any server.
+# Leave empty to allow any public server.
+#
+# This list also marks internal servers as intentional. Logging in makes the
+# bridge fetch a URL the user chose, so an address on a loopback, private or
+# link-local network is refused unless it is named here — otherwise anyone
+# permitted to use the bridge could aim it at the network it runs in. Naming a
+# host here says you meant it; it does not open the rest of that network.
 allowed_servers: []
 
 # Relay messages from Matrix users who have not linked a Nextcloud account.

@@ -282,15 +282,19 @@ func TestValidateServerURLStripsQueryAndFragment(t *testing.T) {
 }
 
 func TestStartBrowserFlowPresentsApprovalURL(t *testing.T) {
+	var srvURL string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"poll":  map[string]string{"token": "polltoken", "endpoint": "https://cloud.example.com/poll"},
-			"login": "https://cloud.example.com/index.php/login/v2/flow/abc",
+			"poll":  map[string]string{"token": "polltoken", "endpoint": srvURL + "/poll"},
+			"login": srvURL + "/index.php/login/v2/flow/abc",
 		})
 	}))
 	defer srv.Close()
+	srvURL = srv.URL
 
-	nc := &NCTalkConnector{HTTP: srv.Client()}
+	// The test server is on loopback, which the bridge refuses unless the
+	// operator named it — exactly as a deployment beside its own Nextcloud does.
+	nc := &NCTalkConnector{HTTP: srv.Client(), Config: Config{AllowedServers: []string{hostOfOrEmpty(srv.URL)}}}
 	l := &NCTalkLogin{Main: nc, FlowID: LoginFlowIDBrowser}
 
 	step, err := l.SubmitUserInput(t.Context(), map[string]string{"server_url": srv.URL})
@@ -305,10 +309,10 @@ func TestStartBrowserFlowPresentsApprovalURL(t *testing.T) {
 	}
 	// The user has to be able to reach the approval page, so the URL must be
 	// both in the data and visible in the instructions.
-	if step.DisplayAndWaitParams.Data != "https://cloud.example.com/index.php/login/v2/flow/abc" {
+	if step.DisplayAndWaitParams.Data != srvURL+"/index.php/login/v2/flow/abc" {
 		t.Errorf("data = %q", step.DisplayAndWaitParams.Data)
 	}
-	if !strings.Contains(step.Instructions, "https://cloud.example.com/index.php/login/v2/flow/abc") {
+	if !strings.Contains(step.Instructions, srvURL+"/index.php/login/v2/flow/abc") {
 		t.Errorf("instructions do not show the approval URL: %q", step.Instructions)
 	}
 }
@@ -440,4 +444,13 @@ func TestCancelStopsAnInFlightWait(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Cancel did not stop the in-flight Wait")
 	}
+}
+
+// hostOfOrEmpty is hostOf without the error, for building test configs.
+func hostOfOrEmpty(rawURL string) string {
+	host, err := hostOf(rawURL)
+	if err != nil {
+		return ""
+	}
+	return host
 }

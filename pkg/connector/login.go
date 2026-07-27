@@ -151,6 +151,11 @@ func (l *NCTalkLogin) SubmitUserInput(ctx context.Context, input map[string]stri
 		if !l.Main.Config.ServerAllowed(host) {
 			return nil, fmt.Errorf("this bridge does not allow logins to %s", host)
 		}
+		// Checked before any request is made to the address, since making the
+		// request is itself what this prevents.
+		if err := l.Main.checkServerAddress(ctx, host); err != nil {
+			return nil, err
+		}
 
 		if l.FlowID == LoginFlowIDAppPassword {
 			return l.credentialsStep(), nil
