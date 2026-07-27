@@ -54,6 +54,45 @@ jobs:
         with:
           context: .
           push: false
+          load: true
+          tags: matrix-nctalk:ci
           build-args: |
             VERSION=ci
             COMMIT=${{ github.sha }}
+
+      # Building it proves the Dockerfile parses, not that the result runs. A
+      # base image bump can leave a binary that will not start — the runtime is
+      # Alpine and the binary is musl-linked against whatever the Go image
+      # ships — and a build-only check would pass all the way to a release.
+      - name: Smoke test the image
+        run: |
+          set -eu
+
+          echo "::group::binary runs and reports its version"
+          docker run --rm matrix-nctalk:ci --version
+          echo "::endgroup::"
+
+          echo "::group::runtime dependencies the entrypoint needs"
+          docker run --rm --entrypoint sh matrix-nctalk:ci -c '
+            set -eu
+            cat /etc/alpine-release
+            command -v su-exec >/dev/null || { echo "su-exec missing"; exit 1; }
+            test -f /etc/ssl/certs/ca-certificates.crt || { echo "ca-certificates missing"; exit 1; }
+          '
+          echo "::endgroup::"
+
+          echo "::group::bot-install needs no config"
+          docker run --rm matrix-nctalk:ci bot-install --url https://bridge.example.com/_nctalk/webhook \
+            | grep -q "occ talk:bot:install"
+          echo "::endgroup::"
+
+          echo "::group::first run bootstraps and drops privileges"
+          docker volume create nctalk-ci >/dev/null
+          docker run --rm -v nctalk-ci:/data matrix-nctalk:ci || true
+          # A named volume rather than a bind mount: bind mount ownership is not
+          # meaningful on every platform, and the uid is the point of the check.
+          owner=$(docker run --rm -v nctalk-ci:/data --entrypoint stat matrix-nctalk:ci -c "%u:%g" /data/config.yaml)
+          echo "config.yaml owned by $owner"
+          [ "$owner" = "1337:1337" ] || { echo "expected the config to be owned by the unprivileged user"; exit 1; }
+          docker volume rm nctalk-ci >/dev/null
+          echo "::endgroup::"
