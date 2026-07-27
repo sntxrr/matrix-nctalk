@@ -230,6 +230,12 @@ Two consequences worth knowing before you rely on it:
 
 ## Security notes
 
+Found a vulnerability? Please report it privately through
+[GitHub's advisory form](https://github.com/sntxrr/matrix-nctalk/security/advisories/new)
+rather than as a public issue. [SECURITY.md](SECURITY.md) covers what is in
+scope and which limitations are already known.
+
+
 - **The webhook shares a listener with the appservice.** See [Deployment topology](#deployment-topology). Rate limiting belongs on the reverse proxy in front of it — deliberately not in the bridge, because Talk counts any non-200 against a bot's error budget and disables bots that accumulate them, so a bridge that shed load under attack would eventually be switched off by Nextcloud rather than merely slowed. What the bridge does do is reject a request with missing or replayed signature headers before reading its body, so the cheap floods stay cheap.
 - **Logging in makes the bridge fetch a URL the user chose.** Internal addresses are refused unless named in `allowed_servers`, and the login handshake's poll endpoint must share an origin with the server the user entered — otherwise a hostile server could point it anywhere and have the bridge poll it for the length of the login timeout. Neither check survives DNS rebinding; closing that needs address checking at connect time.
 - **App passwords are encrypted at rest.** See [Credential storage](#credential-storage) for what that does and does not buy you.

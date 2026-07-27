@@ -1,0 +1,42 @@
+version: 2
+
+updates:
+  # The workflows went a whole major behind without anyone noticing, and the
+  # first sign was a deprecation warning on a release build. This is what stops
+  # that recurring — and it matters more than usual here, because the release
+  # workflow holds packages:write and contents:write.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # mautrix-go moves quickly and its modules move together; one pull request
+      # per module would be noise.
+      mautrix:
+        patterns:
+          - maunium.net/go/mautrix
+          - go.mau.fi/*
+      rest:
+        patterns: ["*"]
+        exclude-patterns:
+          - maunium.net/go/mautrix
+          - go.mau.fi/*
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
