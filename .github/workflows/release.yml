@@ -92,15 +92,25 @@ jobs:
             refs="$refs ${IMAGE}@$(cat "$f")"
           done
           tag="${GITHUB_REF_NAME}"
-          minor="${tag%.*}"          # v1.2.3 -> v1.2
-          # `latest` moves only on a release, never on a push to main: a bridge
-          # holding a migrating database is the wrong thing to silently roll
-          # forward.
-          docker buildx imagetools create \
-            -t "${IMAGE}:${tag}" \
-            -t "${IMAGE}:${minor}" \
-            -t "${IMAGE}:latest" \
-            $refs
+          tags="-t ${IMAGE}:${tag}"
+
+          # A prerelease gets its exact tag and nothing else. Moving `latest` or
+          # a minor tag onto v1.2.3-rc1 would hand a release candidate to
+          # everyone pulling `latest`, and "v1.2.3-rc" is not a minor version.
+          case "$tag" in
+          *-*)
+            echo "$tag is a prerelease: tagging the exact version only"
+            ;;
+          *)
+            minor="${tag%.*}"        # v1.2.3 -> v1.2
+            # `latest` moves only on a release, never on a push to main: a
+            # bridge holding a migrating database is the wrong thing to
+            # silently roll forward.
+            tags="$tags -t ${IMAGE}:${minor} -t ${IMAGE}:latest"
+            ;;
+          esac
+
+          docker buildx imagetools create $tags $refs
           docker buildx imagetools inspect "${IMAGE}:${tag}"
 
   binaries:
