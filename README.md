@@ -266,6 +266,10 @@ docker-run.sh         container entrypoint, walks a first run through setup
 docker-compose.yaml   running it against your own Synapse and Nextcloud
 ```
 
+## Sponsoring
+
+This is spare-time work, given away. If the bridge is useful to you, [GitHub Sponsors](https://github.com/sponsors/sntxrr), [Ko-fi](https://ko-fi.com/A0A8GQSBP) and [Buy Me a Coffee](https://www.buymeacoffee.com/sntxrr) all reach me. Entirely optional, and it buys no priority — a good bug report is worth as much.
+
 ## Licence
 
 [GNU AGPL-3.0-or-later](LICENSE), the same licence as [mautrix-go](https://github.com/mautrix/go), which this is built on.
