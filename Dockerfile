@@ -30,7 +30,7 @@ RUN go build -tags goolm \
     -ldflags "-X main.Tag=${VERSION} -X main.Commit=${COMMIT} -X main.BuildTime=${BUILD_TIME}" \
     -o /build/matrix-nctalk ./cmd/matrix-nctalk
 
-FROM alpine:3.22
+FROM alpine:3.24
 
 # ca-certificates to reach Nextcloud over HTTPS; su-exec to drop privileges
 # after fixing the ownership of a freshly mounted volume.
