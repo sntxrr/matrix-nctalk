@@ -32,7 +32,7 @@ var (
 	BuildTime = "unknown"
 )
 
-var version = "0.1.1"
+var version = "0.1.2"
 
 func main() {
 	// Handled before the bridge's own flag parsing, which does not know about
