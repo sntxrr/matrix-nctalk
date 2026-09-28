@@ -105,7 +105,7 @@ make dev-bridge   # run the bridge against it, in the foreground
 
 Talk reaches the bridge at `host.docker.internal`. No tunnel is needed: Talk's `BotService` passes `allow_local_address`, so it will post webhooks to private addresses, and it accepts `http://` bot URLs.
 
-To exercise it: log in as `alice` through the bridge bot, create a conversation in Talk that alice moderates, and send a message. The bridge enables its own bot in the conversation, and messages flow both ways.
+To exercise it: log in as `alice` through the bridge bot, create a group conversation in Talk that alice moderates, and restart the bridge (or wait for the next `sync_interval`). The bridge enables its own bot in the conversation, Talk announces that with a webhook, the Matrix room is created, and messages flow both ways.
 
 ```sh
 make dev-logs     # follow container logs
@@ -126,7 +126,9 @@ Everything in the dev stack uses fixed throwaway credentials and is bound to loc
 
 Conversations become **shared portals**: a Talk conversation token is global to the server and both sides of a one-to-one see the same token, so every bridged user of a conversation lands in the same Matrix room.
 
-The bridge enables its own bot per conversation via `POST /ocs/v2.php/apps/spreed/api/v1/bot/{token}/{botId}`, which needs the logged-in user to be a **moderator** of that conversation. Where they are not, a moderator must enable "Matrix Bridge" in the conversation's settings, or an admin can run `occ talk:bot:setup <botId> <token>`.
+The bridge enables its own bot per conversation via `POST /ocs/v2.php/apps/spreed/api/v1/bot/{token}/{botId}`, which needs the logged-in user to be a **moderator** of that conversation. With `auto_enable_bot` on, it does this for every group and public conversation the user moderates, when they log in and on each `sync_interval` pass after that, so a conversation created later is bridged within one interval. Enabling the bot is what creates the Matrix room: Talk only sends webhooks for conversations the bot is in, and its announcement of the bot joining is the first one.
+
+One-to-one conversations and Note to self are never enabled automatically, because Talk announces a bot to every participant and doing that unasked in a private chat is too much. Where the user is not a moderator, or for those conversations, a moderator must enable "Matrix Bridge" in the conversation's settings, or an admin can run `occ talk:bot:setup <botId> <token>`. Enabling it by hand bridges the conversation immediately.
 
 ### Signing, in both directions
 
