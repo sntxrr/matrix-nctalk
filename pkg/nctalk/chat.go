@@ -104,26 +104,33 @@ func (c *Client) SendMessage(ctx context.Context, token string, req SendMessageR
 // your own messages unless you moderate the conversation, and only when the
 // server advertises the edit-messages capability. It keeps the message ID, so
 // nothing the bridge has recorded about the message changes.
-func (c *Client) EditMessage(ctx context.Context, token string, messageID int64, message string) error {
+//
+// Talk answers with the "message_edited" system message the edit produced,
+// carrying the edited message as its parent. That system message is also what
+// the bot webhook reports afterwards, so the caller can recognise the echo.
+func (c *Client) EditMessage(ctx context.Context, token string, messageID int64, message string) (*Message, error) {
+	var out Message
 	_, err := c.requestJSON(ctx, http.MethodPut, chatMessagePath(token, messageID),
-		nil, url.Values{"message": {message}}, nil)
+		nil, url.Values{"message": {message}}, &out)
 	if err != nil {
-		return fmt.Errorf("edit message %d in %s: %w", messageID, token, err)
+		return nil, fmt.Errorf("edit message %d in %s: %w", messageID, token, err)
 	}
-	return nil
+	return &out, nil
 }
 
 // DeleteMessage deletes a message.
 //
 // Talk only permits this within 6 hours, and it does not remove the message so
 // much as replace its text with a "message deleted" placeholder, which is why
-// the response carries a message rather than nothing.
-func (c *Client) DeleteMessage(ctx context.Context, token string, messageID int64) error {
-	_, err := c.requestJSON(ctx, http.MethodDelete, chatMessagePath(token, messageID), nil, nil, nil)
+// the response carries a message rather than nothing: the "message_deleted"
+// system message, with the placeholder as its parent.
+func (c *Client) DeleteMessage(ctx context.Context, token string, messageID int64) (*Message, error) {
+	var out Message
+	_, err := c.requestJSON(ctx, http.MethodDelete, chatMessagePath(token, messageID), nil, nil, &out)
 	if err != nil {
-		return fmt.Errorf("delete message %d in %s: %w", messageID, token, err)
+		return nil, fmt.Errorf("delete message %d in %s: %w", messageID, token, err)
 	}
-	return nil
+	return &out, nil
 }
 
 // SetReadMarker moves the authenticated user's read marker in a conversation.

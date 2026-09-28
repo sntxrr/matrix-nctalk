@@ -153,6 +153,12 @@ Going the other way, a file is a WebDAV `PUT` into the user's attachment folder 
 
 Also note that `PUT` overwrites silently, so a name already in use has to be found with `HEAD` and stepped around before uploading, not discovered afterwards.
 
+### Edits and deletions do not say what changed
+
+An edit or deletion made in Talk reaches the bot as an `Activity` carrying a `message_edited` or `message_deleted` system message — and nothing else. The payload names neither the changed message nor its new text. The chat API does: re-reading the system message with `GET /chat/{token}/{messageId}/context?limit=1` returns it with a `parent`, which is the changed message in its current state. The bridge applies that to the bridged message, as a Matrix edit or a redaction.
+
+Changes the bridge made from Matrix come back the same way. A deletion's echo finds nothing left to remove. An edit's echo is recognised by the system message ID Talk answered the edit with, which the bridge records on the message. Editing a shared file's caption in Talk is not bridged, since it would mean moving the whole file again.
+
 ### Reading history is full of small traps
 
 `GET /chat/{token}` serves one page in one direction and reports the cursor for the next in the **`X-Chat-Last-Given`** header. Four things about it are easy to get wrong:

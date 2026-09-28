@@ -88,11 +88,34 @@ func (c *NCTalkClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.Matri
 		return errMessageTooLong
 	}
 
-	if err := c.Client.EditMessage(ctx, token, messageID, text); err != nil {
+	resp, err := c.Client.EditMessage(ctx, token, messageID, text)
+	if err != nil {
 		return c.wrapModifyError(ctx, err, "edit")
 	}
 	msg.EditTarget.EditCount++
+	// bridgev2 saves the edit target after this returns, which is what lets the
+	// webhook echo of this edit be recognised later.
+	recordEditEcho(msg.EditTarget, messageID, resp)
 	return nil
+}
+
+// recordEditEcho notes which edit the bridge itself made, so its webhook echo
+// is not bridged back to Matrix as a second edit.
+func recordEditEcho(target *database.Message, messageID int64, resp *nctalk.Message) {
+	meta, ok := target.Metadata.(*MessageMetadata)
+	if !ok || resp == nil {
+		return
+	}
+	edited := resp
+	if resp.SystemMessage == nctalk.SystemMessageEdited && resp.ID != messageID {
+		meta.EditEchoID = resp.ID
+		if resp.Parent != nil {
+			edited = resp.Parent
+		}
+	}
+	if edited.LastEditTimestamp > 0 {
+		meta.EditEchoTS = edited.LastEditTimestamp
+	}
 }
 
 // HandleMatrixMessageRemove implements bridgev2.RedactionHandlingNetworkAPI.
@@ -113,7 +136,9 @@ func (c *NCTalkClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridg
 		return errDeleteTargetTooOld
 	}
 
-	if err := c.Client.DeleteMessage(ctx, token, messageID); err != nil {
+	// No echo bookkeeping is needed: bridgev2 deletes the message row once this
+	// returns, so the webhook echo of the deletion finds no target.
+	if _, err := c.Client.DeleteMessage(ctx, token, messageID); err != nil {
 		return c.wrapModifyError(ctx, err, "delete")
 	}
 	return nil
