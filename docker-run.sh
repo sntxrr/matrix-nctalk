@@ -46,6 +46,8 @@ Fill in at least:
   homeserver.address / homeserver.domain  where your homeserver is
   appservice.public_address               the URL Nextcloud can reach this bridge at
   bridge.permissions                      who may use the bridge
+  backfill.enabled                        set to true, or messages sent while the
+                                          bridge is down are lost
 
 For network.bot_secret, run:
   docker compose run --rm matrix-nctalk bot-install

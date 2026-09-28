@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/bridgeconfig"
 
 	"github.com/sntxrr/matrix-nctalk/pkg/nctalk"
 )
@@ -71,7 +72,23 @@ func (nc *NCTalkConnector) Start(ctx context.Context) error {
 	if nc.Config.BotName == "" {
 		return fmt.Errorf("network.bot_name is not set; it must match the name the bot was installed with")
 	}
+	if backfillDisabled(nc.Bridge.Config) {
+		nc.Bridge.Log.Warn().Msg("backfill.enabled is false: new rooms will start empty, and messages sent " +
+			"while the bridge is down will never be bridged, because Talk does not retry webhooks. " +
+			"Set backfill.enabled: true unless that is what you want")
+	}
 	return nc.registerWebhook(ctx)
+}
+
+// backfillDisabled reports whether the bridge will skip backfill entirely.
+//
+// The generated config comes from mautrix's shared template, which ships
+// backfill off and cannot be changed per connector. For most bridges that only
+// costs history; here it also costs every message sent while the bridge was
+// down, since backfill is the only route by which those are recovered. So the
+// bridge says so at startup rather than losing them quietly.
+func backfillDisabled(cfg *bridgeconfig.BridgeConfig) bool {
+	return cfg != nil && !cfg.Backfill.Enabled
 }
 
 // GetName implements bridgev2.NetworkConnector.

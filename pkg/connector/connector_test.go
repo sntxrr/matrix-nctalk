@@ -26,7 +26,9 @@ import (
 	"go.mau.fi/util/configupgrade"
 	"gopkg.in/yaml.v3"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/bridgeconfig"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/matrix/mxmain"
 )
 
 // GetName is called before the config is loaded, so it must not depend on it.
@@ -121,6 +123,40 @@ func TestStartRequiresBotConfiguration(t *testing.T) {
 	err = nc.Start(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "bot_name") {
 		t.Errorf("expected a complaint about bot_name, got %v", err)
+	}
+}
+
+// Talk never retries a webhook, so with backfill off a message sent while the
+// bridge is down is gone for good. The default config ships it off, so the
+// bridge has to say so rather than let it happen silently.
+func TestBackfillDisabled(t *testing.T) {
+	if backfillDisabled(nil) {
+		t.Error("a bridge with no config loaded should not be reported as having backfill off")
+	}
+	cfg := &bridgeconfig.BridgeConfig{}
+	if !backfillDisabled(cfg) {
+		t.Error("backfill.enabled: false should be reported")
+	}
+	cfg.Backfill.Enabled = true
+	if backfillDisabled(cfg) {
+		t.Error("backfill.enabled: true should not be reported")
+	}
+}
+
+// The generated config is where a new install's value comes from. If mautrix
+// ever flips its default, the warning and the README note become stale and
+// this test says so.
+func TestGeneratedConfigShipsBackfillOff(t *testing.T) {
+	var cfg struct {
+		Backfill struct {
+			Enabled bool `yaml:"enabled"`
+		} `yaml:"backfill"`
+	}
+	if err := yaml.Unmarshal([]byte(mxmain.MatrixExampleConfigBase), &cfg); err != nil {
+		t.Skipf("upstream example config is a template that does not parse on its own: %v", err)
+	}
+	if cfg.Backfill.Enabled {
+		t.Error("mautrix now enables backfill by default; drop the startup warning and the README caveat")
 	}
 }
 
