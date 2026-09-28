@@ -399,7 +399,7 @@ func (c *NCTalkClient) backfillReactions(ctx context.Context, msg *nctalk.Messag
 	out := make([]*bridgev2.BackfillReaction, 0, len(list))
 	for emoji, reactors := range list {
 		for _, reactor := range reactors {
-			if !isBridgeableActor(reactor.ActorType) {
+			if !isGhostableActor(reactor.ActorType, reactor.ActorID) {
 				continue
 			}
 			out = append(out, &bridgev2.BackfillReaction{

@@ -96,6 +96,24 @@ func TestClientEventSender(t *testing.T) {
 	}
 }
 
+func TestClientEventSenderSystemActor(t *testing.T) {
+	client := newTestClient(t, "https://cloud.example.com", "alice", Config{})
+
+	// Anything done through occ is attributed to guests/cli. An empty sender is
+	// what makes bridgev2 send it as the bridge bot instead of a ghost.
+	for _, id := range []string{nctalk.ActorIDCLI, nctalk.ActorIDSystem, nctalk.ActorIDChangelog, nctalk.ActorIDSample} {
+		sender := client.eventSender(nctalk.ActorGuests, id)
+		if sender.Sender != "" || sender.IsFromMe || sender.SenderLogin != "" {
+			t.Errorf("guests/%s: sender = %+v, want empty so the bridge bot sends it", id, sender)
+		}
+	}
+
+	guest := client.eventSender(nctalk.ActorGuests, "3f786850e387550fdab836ed7e6dc881de23001b")
+	if guest.Sender != makeUserID(client.host(), nctalk.ActorGuests, "3f786850e387550fdab836ed7e6dc881de23001b") {
+		t.Errorf("a real guest should still get a ghost, got sender %q", guest.Sender)
+	}
+}
+
 func TestGetChatInfoGroupConversation(t *testing.T) {
 	url, _ := newOCSServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -106,6 +124,9 @@ func TestGetChatInfoGroupConversation(t *testing.T) {
 				// Actor types with no Matrix equivalent must be skipped rather
 				// than producing broken ghosts.
 				{"actorType": "circles", "actorId": "circle1", "displayName": "A Circle", "participantType": nctalk.ParticipantTypeUser},
+				// Nor may Talk's pseudo-actors become members: a ghost for
+				// guests/cli is a phantom that clients offer in autocomplete.
+				{"actorType": nctalk.ActorGuests, "actorId": nctalk.ActorIDCLI, "participantType": nctalk.ParticipantTypeGuest},
 			})
 		default:
 			writeOCS(t, w, map[string]any{
@@ -132,7 +153,7 @@ func TestGetChatInfoGroupConversation(t *testing.T) {
 		t.Errorf("room type = %v, want default", info.Type)
 	}
 	if len(info.Members.MemberMap) != 2 {
-		t.Errorf("got %d members, want 2 (the circle should be skipped)", len(info.Members.MemberMap))
+		t.Errorf("got %d members, want 2 (the circle and guests/cli should be skipped)", len(info.Members.MemberMap))
 	}
 
 	owner := info.Members.MemberMap[makeUserID(client.host(), nctalk.ActorUsers, "alice")]

@@ -334,6 +334,15 @@ func TestConvertToTalkMentions(t *testing.T) {
 			want:   "hi Botty",
 		},
 		{
+			// A ghost for guests/cli can survive from before pseudo-actors were
+			// excluded. Mentioning it must not produce @"guest/cli", which Talk
+			// shows as literal text.
+			name:   "a pseudo-actor ghost falls back to the display name",
+			ghosts: map[id.UserID]networkid.UserID{ghostMXID: makeUserID(testHost, nctalk.ActorGuests, nctalk.ActorIDCLI)},
+			html:   `hi <a href="https://matrix.to/#/` + ghostMXID + `">cli</a>`,
+			want:   "hi cli",
+		},
+		{
 			name:   "a ghost on another server falls back to the display name",
 			ghosts: map[id.UserID]networkid.UserID{ghostMXID: makeUserID("other.example.com", nctalk.ActorUsers, "bob")},
 			html:   `hi <a href="https://matrix.to/#/` + ghostMXID + `">Bob</a>`,

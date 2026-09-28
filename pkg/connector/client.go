@@ -267,7 +267,7 @@ func (c *NCTalkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal)
 		MemberMap:        make(bridgev2.ChatMemberMap, len(participants)),
 	}
 	for _, p := range participants {
-		if !isBridgeableActor(p.ActorType) {
+		if !isGhostableActor(p.ActorType, p.ActorID) {
 			continue
 		}
 		sender := c.eventSender(p.ActorType, p.ActorID)
@@ -390,7 +390,13 @@ func (c *NCTalkClient) download(ctx context.Context, url string) ([]byte, error)
 
 // eventSender builds the bridgev2 sender for a Talk actor, marking messages
 // from this login's own account so they are attributed correctly.
+//
+// A Talk pseudo-actor gets an empty sender, which bridgev2 sends as the bridge
+// bot rather than creating a ghost for it.
 func (c *NCTalkClient) eventSender(actorType, actorID string) bridgev2.EventSender {
+	if !isGhostableActor(actorType, actorID) {
+		return bridgev2.EventSender{}
+	}
 	isSelf := actorType == nctalk.ActorUsers && actorID == c.meta().Username
 	sender := bridgev2.EventSender{
 		IsFromMe: isSelf,
