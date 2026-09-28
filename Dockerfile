@@ -1,4 +1,4 @@
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 # CGO is not optional here. mautrix's mxmain imports github.com/mattn/go-sqlite3
 # unconditionally — it reads sqlite3.ErrCorrupt while handling database errors —
