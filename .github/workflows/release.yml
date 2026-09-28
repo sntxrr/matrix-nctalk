@@ -12,10 +12,30 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
+  # mautrix only reports a build as a release when the tag matches the
+  # `version` constant in main.go exactly; otherwise it stamps it
+  # vX.Y.Z+dev.<commit> using the stale constant. v0.2.0 shipped that way, so
+  # refuse to build anything until the two agree.
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Tag matches the version constant
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          constant="$(sed -n 's/^var version = "\(.*\)"$/\1/p' cmd/matrix-nctalk/main.go)"
+          if [ "v$constant" != "$TAG" ]; then
+            echo "::error file=cmd/matrix-nctalk/main.go::tag $TAG does not match version constant \"$constant\"; bump it before tagging"
+            exit 1
+          fi
+          echo "tag $TAG matches version constant $constant"
+
   # CGO is mandatory — mautrix's mxmain imports the C sqlite3 driver
   # unconditionally — so each architecture is built on its own native runner.
   # That avoids both QEMU emulation of the compiler and a cross toolchain.
   image:
+    needs: version-check
     strategy:
       fail-fast: false
       matrix:
@@ -114,6 +134,7 @@ jobs:
           docker buildx imagetools inspect "${IMAGE}:${tag}"
 
   binaries:
+    needs: version-check
     strategy:
       fail-fast: false
       matrix:
