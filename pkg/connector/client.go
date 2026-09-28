@@ -63,6 +63,9 @@ type NCTalkClient struct {
 	// mxidParser overrides how mention pills are resolved to Talk actors. It is
 	// nil in production, where the bridge's Matrix connector is used.
 	mxidParser ghostParser
+	// mentions overrides how incoming Talk mentions are resolved to Matrix
+	// users. It is nil in production, where the bridge is used.
+	mentions mentionTarget
 	// downloader overrides where outgoing media is fetched from. It is nil in
 	// production, where the bridge bot is used.
 	downloader mediaDownloader
