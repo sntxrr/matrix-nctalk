@@ -10,7 +10,7 @@ This is a double-puppeting bridge instead:
 - Matrix users post into Talk **as their own Nextcloud account**, not as a relay bot.
 - Ingress uses Talk's **bot webhook API**, so messages are pushed rather than polled.
 
-> **Status: early development, but running.** Messages, files, reactions, edits, deletions and read receipts bridge both ways, with replies, mentions and formatting. History is backfilled into new rooms and after downtime. Published as a multi-arch container image — see [Running it](#running-it).
+> **Status: early development, but running.** Messages, files, reactions, edits, deletions and read receipts bridge both ways, with replies, mentions and formatting. History is backfilled into new rooms and after downtime once `backfill.enabled` is switched on — [it ships off](#turn-on-backfill). Published as a multi-arch container image — see [Running it](#running-it).
 >
 > Back up the bridge database before upgrading. Schema migrations are forward-only.
 
@@ -42,7 +42,7 @@ The webhook endpoint is mounted on the *appservice* HTTP listener, so if Nextclo
 ```sh
 mkdir -p data && curl -O https://raw.githubusercontent.com/sntxrr/matrix-nctalk/main/docker-compose.yaml
 docker compose up          # writes data/config.yaml and stops
-$EDITOR data/config.yaml   # homeserver, appservice.public_address, permissions
+$EDITOR data/config.yaml   # homeserver, appservice.public_address, permissions, backfill.enabled
 docker compose up          # writes data/registration.yaml and stops
 ```
 
@@ -62,6 +62,10 @@ $EDITOR config.yaml
 The build uses the `goolm` tag to select mautrix's pure-Go Olm implementation, so libolm is not needed. **CGO is required regardless**: mautrix's `mxmain` imports the C sqlite3 driver unconditionally, even when you configure Postgres, so `CGO_ENABLED=0` will not build.
 
 **`appservice.public_address` must be set to a real URL.** The Matrix connector treats the placeholder value as unset and then exposes no HTTP server at all, which is what the webhook endpoint is mounted on — so the bridge refuses to start. Set it to the address Nextcloud can reach the bridge at.
+
+### Turn on backfill
+
+**Set `backfill.enabled: true`.** The generated config comes from mautrix's shared template, which ships it off, and a connector cannot change that default. For most bridges that only costs history. Here it also costs every message sent while the bridge is down: Talk sends each webhook once and never retries, so backfill is the only way those are recovered. With it off, new rooms start empty and the bridge logs a warning at startup.
 
 ### Installing the bot
 
@@ -178,7 +182,7 @@ Accepted randoms are also remembered for fifteen minutes, so a captured request 
 
 ### Nothing retries a missed webhook
 
-Talk sends each bot event once. A bridge that is down misses those messages permanently, and no later event refers back to them. So each login resyncs its bridged conversations on a timer (`sync_interval`, default hourly) and immediately on connect: room name, topic, avatar and members, plus the conversation's last activity time, which is what tells bridgev2 to pull in anything newer than the last bridged message. Recovering missed messages also needs `backfill.enabled: true`, which is off in the default config.
+Talk sends each bot event once. A bridge that is down misses those messages permanently, and no later event refers back to them. So each login resyncs its bridged conversations on a timer (`sync_interval`, default hourly) and immediately on connect: room name, topic, avatar and members, plus the conversation's last activity time, which is what tells bridgev2 to pull in anything newer than the last bridged message. Recovering missed messages also needs `backfill.enabled: true`, which is off in the default config — see [Turn on backfill](#turn-on-backfill).
 
 Only conversations that already have a portal are resynced — a timer is not a reason to pull every conversation on the server into Matrix — and when several logins share a conversation, the one that owns the portal does the work.
 
