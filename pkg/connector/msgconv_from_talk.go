@@ -92,7 +92,9 @@ func (c *NCTalkClient) convertMessage(ctx context.Context, portal *bridgev2.Port
 	}
 
 	var content event.MessageEventContent
-	if msg.IsMarkdown {
+	if segments, mentions, ok := c.segmentTalkMessage(ctx, msg); ok {
+		content = renderTalkContent(segments, mentions, msg.IsMarkdown)
+	} else if msg.IsMarkdown {
 		// Talk's markdown is close enough to CommonMark for the shared renderer.
 		content = format.RenderMarkdown(plain, true, false)
 	} else {
