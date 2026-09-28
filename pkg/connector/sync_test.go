@@ -19,7 +19,9 @@ package connector
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -141,6 +143,114 @@ func TestSyncConversationsLeavesRoomsWithoutAPortalAlone(t *testing.T) {
 
 	if len(rec.events) != 0 {
 		t.Errorf("queued %d events for conversations nobody has bridged", len(rec.events))
+	}
+}
+
+// newAutoEnableClient wires a sync client whose server also answers the bot
+// endpoints. It returns the tokens the bot was enabled in, in call order.
+// Enabling fails in any conversation listed in rejectTokens.
+func newAutoEnableClient(t *testing.T, cfg Config, convs []map[string]any, rejectTokens ...string) (*NCTalkClient, *recordingQueuer, func() []string) {
+	t.Helper()
+
+	var mu sync.Mutex
+	var enabled []string
+	url, _ := newOCSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case strings.HasSuffix(path, "/api/v4/room"):
+			writeOCS(t, w, convs)
+		case strings.Contains(path, "/api/v1/bot/") && r.Method == http.MethodPost:
+			token := strings.Split(path[strings.Index(path, "/api/v1/bot/")+len("/api/v1/bot/"):], "/")[0]
+			if slices.Contains(rejectTokens, token) {
+				writeOCSError(w, http.StatusBadRequest, "bot")
+				return
+			}
+			mu.Lock()
+			enabled = append(enabled, token)
+			mu.Unlock()
+			writeOCS(t, w, map[string]any{"id": 7, "name": testBotName})
+		case strings.Contains(path, "/api/v1/bot/"):
+			writeOCS(t, w, []map[string]any{{"id": 7, "name": testBotName, "state": nctalk.BotStateEnabled}})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, path)
+			writeOCSError(w, http.StatusNotFound, "unexpected")
+		}
+	})
+
+	client := newTestClient(t, url, "alice", cfg)
+	rec := &recordingQueuer{}
+	client.queuer = rec
+	client.portalFinder = &fakePortals{}
+	return client, rec, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(enabled)
+	}
+}
+
+// A conversation created after login has no portal, and only a webhook creates
+// one, so the sync has to enable the bot for Talk to start sending them.
+func TestSyncEnablesBotInModeratedConversationsWithoutAPortal(t *testing.T) {
+	convs := []map[string]any{
+		{"token": "group", "type": nctalk.RoomTypeGroup, "participantType": nctalk.ParticipantTypeOwner},
+		{"token": "public", "type": nctalk.RoomTypePublic, "participantType": nctalk.ParticipantTypeModerator},
+		// Talk refuses a moderator-only call from a plain participant.
+		{"token": "member", "type": nctalk.RoomTypeGroup, "participantType": nctalk.ParticipantTypeUser},
+		// Enabling a bot is announced to everyone in the conversation, which is
+		// too much to do unasked in a private chat or the user's own notes.
+		{"token": "dm", "type": nctalk.RoomTypeOneToOne, "participantType": nctalk.ParticipantTypeOwner},
+		{"token": "notes", "type": nctalk.RoomTypeNoteToSelf, "participantType": nctalk.ParticipantTypeOwner},
+		{"token": "changelog", "type": nctalk.RoomTypeChangelog, "participantType": nctalk.ParticipantTypeOwner},
+	}
+	client, rec, enabled := newAutoEnableClient(t, botConfig(), convs)
+
+	client.syncConversations(context.Background())
+
+	if got, want := enabled(), []string{"group", "public"}; !slices.Equal(got, want) {
+		t.Errorf("enabled the bot in %v, want %v", got, want)
+	}
+	// The portal comes from the webhook Talk sends in response, not from the
+	// sync itself.
+	if len(rec.events) != 0 {
+		t.Errorf("queued %d events, want none", len(rec.events))
+	}
+}
+
+// The sync runs hourly; each conversation is asked about once per bridge run,
+// whether enabling worked or not.
+func TestSyncTriesEachConversationOnce(t *testing.T) {
+	convs := []map[string]any{
+		{"token": "works", "type": nctalk.RoomTypeGroup, "participantType": nctalk.ParticipantTypeOwner},
+		{"token": "rejected", "type": nctalk.RoomTypeGroup, "participantType": nctalk.ParticipantTypeOwner},
+	}
+	client, _, enabled := newAutoEnableClient(t, botConfig(), convs, "rejected")
+
+	for range 3 {
+		client.syncConversations(context.Background())
+	}
+
+	if got, want := enabled(), []string{"works"}; !slices.Equal(got, want) {
+		t.Errorf("enabled the bot in %v across 3 passes, want %v once", got, want)
+	}
+	client.botEnableMu.Lock()
+	defer client.botEnableMu.Unlock()
+	if !client.botEnableTried["rejected"] {
+		t.Error("a rejected conversation should be recorded so it is not retried every pass")
+	}
+}
+
+func TestSyncLeavesTheBotAloneWhenAutoEnableIsOff(t *testing.T) {
+	convs := []map[string]any{
+		{"token": "group", "type": nctalk.RoomTypeGroup, "participantType": nctalk.ParticipantTypeOwner},
+	}
+	cfg := botConfig()
+	cfg.AutoEnableBot = false
+	client, _, enabled := newAutoEnableClient(t, cfg, convs)
+
+	client.syncConversations(context.Background())
+
+	if got := enabled(); len(got) != 0 {
+		t.Errorf("enabled the bot in %v with auto_enable_bot off", got)
 	}
 }
 

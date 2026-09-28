@@ -29,9 +29,15 @@ bot_secrets: {}
 # own bot ID in a conversation's bot list, so it must match the name above.
 bot_name: Matrix Bridge
 
-# Automatically enable the bot in conversations where the logged-in Nextcloud
-# user is a moderator. Conversations where they are not a moderator need a
-# moderator to enable the bot manually, or `occ talk:bot:setup <botId> <token>`.
+# Automatically enable the bot in group and public conversations where the
+# logged-in Nextcloud user is a moderator: at login, and on every sync_interval
+# pass after that, so new conversations are bridged within one interval. This
+# bridges every such conversation, not just ones the user picks.
+#
+# One-to-one conversations and Note to self are never enabled automatically,
+# since Talk announces the bot to everyone in the conversation. Those, and
+# conversations where the user is not a moderator, need a moderator to enable
+# the bot by hand, or `occ talk:bot:setup <botId> <token>`.
 auto_enable_bot: true
 
 # Nextcloud servers users are allowed to log into, as bare hostnames.

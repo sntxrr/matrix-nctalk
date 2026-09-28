@@ -143,7 +143,13 @@ func (c *NCTalkClient) syncConversations(ctx context.Context) {
 		}
 		// Only conversations somebody has already bridged are resynced. A timer
 		// is not a reason to pull every conversation on the server into Matrix.
+		//
+		// The one exception is auto_enable_bot, which asks for exactly that for
+		// the conversations this user moderates. Enabling the bot is all it
+		// takes: Talk announces it with a webhook, and the webhook creates the
+		// portal.
 		if portal == nil || portal.MXID == "" {
+			c.autoEnableBot(ctx, conv)
 			continue
 		}
 		// When several logins are in one conversation they all see it here, so

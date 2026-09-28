@@ -74,6 +74,13 @@ type NCTalkClient struct {
 	syncMu     sync.Mutex
 	syncCancel context.CancelFunc
 
+	// botEnableTried records the conversations the sync has already tried to
+	// enable the bridge bot in; see autoEnableBot. It is deliberately only in
+	// memory: a restart retries each conversation once, which is cheap, and is
+	// how a fixed misconfiguration (a wrong bot_name, say) gets picked up.
+	botEnableMu    sync.Mutex
+	botEnableTried map[string]bool
+
 	// credentialErr records that the stored app password could not be read,
 	// which Connect turns into a bad-credentials state rather than a stream of
 	// confusing authentication failures against Nextcloud.
