@@ -214,6 +214,12 @@ func (c *NCTalkClient) talkMention(mxid id.UserID) (string, bool) {
 	if err != nil || host != c.host() {
 		return "", false
 	}
+	// A ghost for a pseudo-actor can survive from an older version of the
+	// bridge. Mentioning it would produce text such as @"guest/cli", which Talk
+	// leaves as literal text because nobody by that name is in the conversation.
+	if nctalk.IsSystemActor(actorType, actorID) {
+		return "", false
+	}
 
 	// The mention is delimited by double quotes, so an actor ID containing one
 	// would produce a mention that ends early and leaks the rest as text.

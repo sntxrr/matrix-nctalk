@@ -185,3 +185,28 @@ func TestMessageDecodesEmptyParameters(t *testing.T) {
 		t.Errorf("msg = %+v", msg)
 	}
 }
+
+func TestIsSystemActor(t *testing.T) {
+	tests := []struct {
+		actorType, actorID string
+		want               bool
+	}{
+		{ActorGuests, ActorIDCLI, true},
+		{ActorGuests, ActorIDSystem, true},
+		{ActorGuests, ActorIDChangelog, true},
+		{ActorGuests, ActorIDSample, true},
+		{ActorEmails, ActorIDSystem, true},
+		// A real guest's ID is a hash.
+		{ActorGuests, "3f786850e387550fdab836ed7e6dc881de23001b", false},
+		// The reserved IDs only mean something for guests and emails: a user
+		// may well be called "system".
+		{ActorUsers, ActorIDSystem, false},
+		{ActorUsers, ActorIDCLI, false},
+		{ActorBots, ActorIDCLI, false},
+	}
+	for _, tc := range tests {
+		if got := IsSystemActor(tc.actorType, tc.actorID); got != tc.want {
+			t.Errorf("IsSystemActor(%q, %q) = %v, want %v", tc.actorType, tc.actorID, got, tc.want)
+		}
+	}
+}

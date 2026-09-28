@@ -160,3 +160,15 @@ func isBridgeableActor(actorType string) bool {
 	}
 	return false
 }
+
+// isGhostableActor reports whether an actor should be represented by a ghost.
+//
+// Talk's pseudo-actors — guests/cli for anything done through `occ`,
+// guests/system and the rest — are bridgeable message senders but not people.
+// A ghost for one would be an unnamed member joined to the room, which clients
+// then offer in mention autocomplete and which maps back to a mention of
+// nobody. Their messages are sent by the bridge bot instead, and they are never
+// listed as members.
+func isGhostableActor(actorType, actorID string) bool {
+	return isBridgeableActor(actorType) && !nctalk.IsSystemActor(actorType, actorID)
+}

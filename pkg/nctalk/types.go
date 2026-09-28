@@ -35,6 +35,33 @@ const (
 	ActorBridgedFromMisc = "bridged"
 )
 
+// Actor IDs Talk uses for pseudo-actors rather than people, from spreed's
+// Attendee model (ACTOR_ID_CLI, ACTOR_ID_SYSTEM, ACTOR_ID_CHANGELOG and
+// ACTOR_ID_SAMPLE). They appear with the guests actor type: an `occ` command is
+// attributed to guests/cli, an automatic action to guests/system, the "Talk
+// updates" conversation to guests/changelog and the sample conversation to
+// guests/sample. A real guest's ID is a hash and never collides with these.
+const (
+	ActorIDCLI       = "cli"
+	ActorIDSystem    = "system"
+	ActorIDChangelog = "changelog"
+	ActorIDSample    = "sample"
+)
+
+// IsSystemActor reports whether an actor is one of Talk's pseudo-actors. It
+// mirrors the check spreed's own MessageParser uses to decide that a guests or
+// emails actor has no display name to look up, because nobody is behind it.
+func IsSystemActor(actorType, actorID string) bool {
+	if actorType != ActorGuests && actorType != ActorEmails {
+		return false
+	}
+	switch actorID {
+	case ActorIDCLI, ActorIDSystem, ActorIDChangelog, ActorIDSample:
+		return true
+	}
+	return false
+}
+
 // Conversation types, from Talk's Room model.
 const (
 	RoomTypeOneToOne       = 1

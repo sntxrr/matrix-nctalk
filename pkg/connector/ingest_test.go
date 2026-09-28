@@ -131,6 +131,53 @@ func TestHandleCreateQueuesMessage(t *testing.T) {
 	}
 }
 
+// TestHandleActivityFromCLIHasNoGhost covers a system message raised by an occ
+// command, which Talk attributes to the pseudo-actor guests/cli. It is still
+// worth bridging, but as the bridge bot: a ghost for it would join the room as
+// an unnamed member.
+func TestHandleActivityFromCLIHasNoGhost(t *testing.T) {
+	client, rec := newIngestClient(t)
+	body := `{"type":"Activity","actor":{"type":"Application","id":"guests/cli","name":"Guest"},"object":{"type":"Note","id":"59","name":"user_added","content":"{\"message\":\"An administrator added {user}\",\"parameters\":{\"user\":{\"type\":\"user\",\"id\":\"bob\",\"name\":\"Bob\"}}}"},"target":{"type":"Collection","id":"abc123token"}}`
+
+	if err := client.handleActivity(context.Background(), mustParse(t, body), "abc123token", time.Now()); err != nil {
+		t.Fatalf("handleActivity failed: %v", err)
+	}
+	if len(rec.events) != 1 {
+		t.Fatalf("queued %d events, want 1: the system message should still be bridged", len(rec.events))
+	}
+	msg, ok := rec.events[0].(*simplevent.Message[*talkMessage])
+	if !ok {
+		t.Fatalf("queued %T, want a message event", rec.events[0])
+	}
+	if msg.Sender.Sender != "" || msg.Sender.IsFromMe {
+		t.Errorf("sender = %+v, want empty so the bridge bot sends it", msg.Sender)
+	}
+}
+
+func TestHandleReactionSkipsSystemActor(t *testing.T) {
+	client, rec := newIngestClient(t, nctalk.ReactionList{
+		"\U0001f44d": {
+			{ActorType: nctalk.ActorGuests, ActorID: nctalk.ActorIDCLI, Timestamp: 1700000000},
+			{ActorType: nctalk.ActorUsers, ActorID: "bob", Timestamp: 1700000000},
+		},
+	})
+	body := `{"type":"Like","actor":{"type":"Person","id":"users/alice"},"object":{"type":"Note","id":"4711","name":"message","content":"{}"},"target":{"type":"Collection","id":"abc123token"},"content":"👍"}`
+
+	if err := client.handleReaction(context.Background(), mustParse(t, body), "abc123token", time.Now()); err != nil {
+		t.Fatalf("handleReaction failed: %v", err)
+	}
+	sync, ok := rec.events[0].(*simplevent.ReactionSync)
+	if !ok {
+		t.Fatalf("queued %T, want a reaction sync event", rec.events[0])
+	}
+	if len(sync.Reactions.Users) != 1 {
+		t.Errorf("got reactions from %d users, want only bob's", len(sync.Reactions.Users))
+	}
+	if _, ok := sync.Reactions.Users[makeUserID(client.host(), nctalk.ActorGuests, nctalk.ActorIDCLI)]; ok {
+		t.Error("guests/cli must not be credited with a reaction")
+	}
+}
+
 func TestHandleCreateSkipsUnbridgeableActor(t *testing.T) {
 	client, rec := newIngestClient(t)
 	body := `{"type":"Create","actor":{"type":"Person","id":"circles/c1"},"object":{"type":"Note","id":"1","name":"message","content":"{\"message\":\"hi\",\"parameters\":{}}"},"target":{"type":"Collection","id":"abc123token"}}`

@@ -421,7 +421,7 @@ func (c *NCTalkClient) syncReactions(ctx context.Context, token string, messageI
 	users := make(map[networkid.UserID]*bridgev2.ReactionSyncUser)
 	for emoji, reactors := range list {
 		for _, reactor := range reactors {
-			if !isBridgeableActor(reactor.ActorType) {
+			if !isGhostableActor(reactor.ActorType, reactor.ActorID) {
 				continue
 			}
 			userID := makeUserID(c.host(), reactor.ActorType, reactor.ActorID)
