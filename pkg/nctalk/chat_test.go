@@ -235,11 +235,24 @@ func TestSendMessageUnauthorized(t *testing.T) {
 
 func TestEditMessage(t *testing.T) {
 	client, last := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		writeOCS(t, w, map[string]any{"id": 4711, "message": "corrected"})
+		// Talk answers with the system message the edit produced, and the
+		// edited message as its parent.
+		writeOCS(t, w, map[string]any{
+			"id":            4720,
+			"systemMessage": "message_edited",
+			"parent":        map[string]any{"id": 4711, "message": "corrected", "lastEditTimestamp": 1790000000},
+		})
 	})
 
-	if err := client.EditMessage(context.Background(), "abc123", 4711, "corrected"); err != nil {
+	sys, err := client.EditMessage(context.Background(), "abc123", 4711, "corrected")
+	if err != nil {
 		t.Fatalf("EditMessage: %v", err)
+	}
+	if sys.ID != 4720 || sys.SystemMessage != "message_edited" {
+		t.Errorf("system message = %d %q, want 4720 message_edited", sys.ID, sys.SystemMessage)
+	}
+	if sys.Parent == nil || sys.Parent.ID != 4711 || sys.Parent.LastEditTimestamp != 1790000000 {
+		t.Errorf("parent = %+v, want the edited message", sys.Parent)
 	}
 	if last.Method != http.MethodPut {
 		t.Errorf("Method = %s, want PUT", last.Method)
@@ -265,8 +278,12 @@ func TestDeleteMessage(t *testing.T) {
 		writeOCS(t, w, map[string]any{"id": 4712, "systemMessage": "message_deleted"})
 	})
 
-	if err := client.DeleteMessage(context.Background(), "abc123", 4711); err != nil {
+	sys, err := client.DeleteMessage(context.Background(), "abc123", 4711)
+	if err != nil {
 		t.Fatalf("DeleteMessage: %v", err)
+	}
+	if sys.ID != 4712 {
+		t.Errorf("system message ID = %d, want 4712", sys.ID)
 	}
 	if last.Method != http.MethodDelete {
 		t.Errorf("Method = %s, want DELETE", last.Method)
@@ -283,7 +300,7 @@ func TestDeleteMessageNotDeletable(t *testing.T) {
 		writeOCSError(w, http.StatusMethodNotAllowed, http.StatusMethodNotAllowed, "not a comment")
 	})
 
-	err := client.DeleteMessage(context.Background(), "abc123", 4711)
+	_, err := client.DeleteMessage(context.Background(), "abc123", 4711)
 	if !IsMethodNotAllowed(err) {
 		t.Fatalf("IsMethodNotAllowed(%v) = false", err)
 	}
@@ -322,8 +339,14 @@ func TestModifyErrorsPropagate(t *testing.T) {
 	ctx := context.Background()
 
 	for name, call := range map[string]func() error{
-		"EditMessage":   func() error { return client.EditMessage(ctx, "abc123", 4711, "x") },
-		"DeleteMessage": func() error { return client.DeleteMessage(ctx, "abc123", 4711) },
+		"EditMessage": func() error {
+			_, err := client.EditMessage(ctx, "abc123", 4711, "x")
+			return err
+		},
+		"DeleteMessage": func() error {
+			_, err := client.DeleteMessage(ctx, "abc123", 4711)
+			return err
+		},
 		"SetReadMarker": func() error { return client.SetReadMarker(ctx, "abc123", 4711) },
 	} {
 		if err := call(); !IsNotFound(err) {

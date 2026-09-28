@@ -252,9 +252,9 @@ const (
 	ParamTypeTalkAttachment = "talk-attachment"
 )
 
-// System message types the bridge suppresses, because each one narrates
-// something it already bridges as a first-class event. Left in, they would
-// double every reaction, edit and deletion with a notice describing it.
+// System message types that narrate a change to another message. The bridge
+// never shows them as notices: reactions are synced from the reaction list
+// instead, and edits and deletions are applied to the message they point at.
 const (
 	SystemReaction        = "reaction"
 	SystemReactionDeleted = "reaction_deleted"
@@ -263,15 +263,20 @@ const (
 	SystemMessageEdited   = "message_edited"
 )
 
-// IsRedundantSystemMessage reports whether a system message only restates an
-// event the bridge already delivers by other means.
+// IsRedundantSystemMessage reports whether a system message only restates a
+// reaction, which the bridge delivers by syncing the reaction list.
 func IsRedundantSystemMessage(systemType string) bool {
 	switch systemType {
-	case SystemReaction, SystemReactionDeleted, SystemReactionRevoked,
-		SystemMessageDeleted, SystemMessageEdited:
+	case SystemReaction, SystemReactionDeleted, SystemReactionRevoked:
 		return true
 	}
 	return false
+}
+
+// IsMessageChange reports whether a system message records an edit or deletion
+// of another message. Its parent is the changed message, in its new state.
+func IsMessageChange(systemType string) bool {
+	return systemType == SystemMessageEdited || systemType == SystemMessageDeleted
 }
 
 // Capabilities is the subset of the Talk capability payload the bridge needs to

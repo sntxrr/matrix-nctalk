@@ -313,9 +313,10 @@ func (c *NCTalkClient) convertBackfillMessage(
 		// history it is noise standing in for something nobody can read.
 		return nil, nil
 	}
-	if nctalk.IsRedundantSystemMessage(msg.SystemMessage) {
-		// Reactions, edits and deletions are each bridged as themselves, so
-		// their narration would double every one of them in the backfilled room.
+	if nctalk.IsRedundantSystemMessage(msg.SystemMessage) || nctalk.IsMessageChange(msg.SystemMessage) {
+		// History already shows every message in its current state, and
+		// reactions are backfilled with it, so this narration would only double
+		// each change in the backfilled room.
 		return nil, nil
 	}
 	if !isBridgeableActor(msg.ActorType) {

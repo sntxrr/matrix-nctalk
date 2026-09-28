@@ -62,6 +62,13 @@ type MessageMetadata struct {
 	// SentViaBot records that the message was relayed by the bot rather than
 	// posted as a real Nextcloud user, which limits later edit and delete.
 	SentViaBot bool `json:"sent_via_bot,omitempty"`
+	// EditEchoID is the ID of the "message_edited" system message produced by
+	// the latest edit made from Matrix. Talk reports that edit back over the
+	// webhook, and anything at or below this ID is that echo, not a new edit.
+	EditEchoID int64 `json:"edit_echo_id,omitempty"`
+	// EditEchoTS is the message's lastEditTimestamp after that edit, used to
+	// recognise the echo when Talk's response did not name the system message.
+	EditEchoTS int64 `json:"edit_echo_ts,omitempty"`
 }
 
 // GetDBMetaTypes implements bridgev2.NetworkConnector.

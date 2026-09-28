@@ -332,11 +332,15 @@ func (c *NCTalkClient) handleCreate(ctx context.Context, evt *nctalk.WebhookEven
 // carries its type in the note's name and becomes an m.notice. A **file share**
 // also arrives as an Activity, with an empty name, because it is an ordinary
 // chat message whose whole body is a rich object; that one is a real message
-// and goes down the same path as any other.
+// and goes down the same path as any other. Edits and deletions are system
+// messages too, and are applied to the message they changed.
 func (c *NCTalkClient) handleActivity(ctx context.Context, evt *nctalk.WebhookEvent, token string, receivedAt time.Time) error {
 	note, err := evt.Note()
 	if err != nil {
 		return err
+	}
+	if nctalk.IsMessageChange(note.Name) {
+		return c.handleMessageChange(ctx, evt, note, token, receivedAt)
 	}
 	if nctalk.IsRedundantSystemMessage(note.Name) {
 		zerolog.Ctx(ctx).Debug().
