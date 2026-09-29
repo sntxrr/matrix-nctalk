@@ -134,6 +134,70 @@ The bridge enables its own bot per conversation via `POST /ocs/v2.php/apps/spree
 
 One-to-one conversations and Note to self are never enabled automatically, because Talk announces a bot to every participant and doing that unasked in a private chat is too much. Where the user is not a moderator, or for those conversations, a moderator must enable "Matrix Bridge" in the conversation's settings, or an admin can run `occ talk:bot:setup <botId> <token>`. Enabling it by hand bridges the conversation immediately.
 
+### Credential storage
+
+The bridge holds a Nextcloud app password per user, because acting as the real person is the whole point of it. Those are encrypted in the database with AES-256-GCM under `network.credential_key`, which is **generated on first run** — there is nothing to switch on:
+
+```yaml
+network:
+    # Written on first start. Back it up with the database.
+    credential_key: cS7nQ...64 characters...tW2v
+```
+
+A stored row then looks like this, and survives being handed to anyone:
+
+```json
+{"server_url":"https://cloud.example.com","username":"alice","app_password":"nctalk:v1:dikHYA4HBUBU…"}
+```
+
+**Be clear about what this protects against.** It protects the database turning up on its own: a backup, a `pg_dump`, a replica, a copied volume, a support bundle. It is *not* protection against someone who has both the database and the config, because that is where the key lives by default.
+
+To separate them, keep the key out of the config entirely. bridgev2 can read any config field from the environment, and a `_FILE` suffix reads it from a path — which is how Docker and Kubernetes secrets work:
+
+```yaml
+# config.yaml
+env_config_prefix: NCTALK_
+network:
+    credential_key: ""     # supplied at runtime instead
+```
+
+```yaml
+# docker-compose.yaml
+services:
+  matrix-nctalk:
+    environment:
+      NCTALK_NETWORK__CREDENTIAL_KEY_FILE: /run/secrets/credential_key
+    secrets:
+      - credential_key
+
+secrets:
+  credential_key:
+    file: ./secrets/credential_key
+```
+
+Two consequences worth knowing before you rely on it:
+
+- **Losing the key is not a leak, but it does cost every login.** Credentials that will not decrypt are reported as `BAD_CREDENTIALS` with a message naming the cause, and the affected user logs in again. The bridge makes no requests to Nextcloud with a credential it could not read, so there is no burst of authentication failures to debug.
+- **Upgrading is transparent.** Credentials written before this existed are read as-is and rewritten encrypted the first time each login connects, which is logged. Nothing needs migrating by hand.
+
+## Known limitations
+
+What you will run into in practice. Each is either a Talk API constraint or a deliberate choice; the linked sections explain why.
+
+- **A conversation created after you log in is bridged within one `sync_interval`** (hourly by default), not immediately. Talk sends no webhook when a conversation is created or someone is added, so the periodic sync is what finds it. Enabling "Matrix Bridge" in the conversation's settings bridges it at once. See [How it works](#how-it-works).
+- **One-to-one conversations and Note to self are never bridged automatically.** Talk announces a bot to every participant, so it has to be enabled by hand there.
+- **Messages sent while the bridge is down are only recovered with backfill on**, and it is off in the default config. See [Turn on backfill](#turn-on-backfill) and [Nothing retries a missed webhook](#nothing-retries-a-missed-webhook).
+- **On Synapse, a new room gets `backfill.max_initial_messages` of history and no more.** Paging further back needs batch sending, which Synapse does not support.
+- **Without double puppeting, editing in Talk a message that was sent from Matrix does not update it in Matrix.** Matrix only lets a user edit their own events.
+- **Editing a shared file's caption in Talk is not bridged**, since it would mean moving the whole file again.
+- **Relayed messages cannot be edited, deleted or replied to from Matrix.** Talk's bot endpoint does not report the ID it gives them. This only applies with `relay_unlinked_users` on.
+- **Calls appear only as notices.** Talk Federation and breakout rooms are out of scope for v1.
+- **The login URL checks do not survive DNS rebinding.** See [Security notes](#security-notes).
+
+## Talk API quirks
+
+Talk's bot API has behaviour that is easy to get wrong. The bridge handles each of these; they are written down so that nobody has to rediscover them.
+
 ### Signing, in both directions
 
 Talk uses the same HMAC primitive each way but signs different data, which is easy to get wrong:
@@ -193,52 +257,6 @@ Accepted randoms are also remembered for fifteen minutes, so a captured request 
 Talk sends each bot event once. A bridge that is down misses those messages permanently, and no later event refers back to them. So each login resyncs its bridged conversations on a timer (`sync_interval`, default hourly) and immediately on connect: room name, topic, avatar and members, plus the conversation's last activity time, which is what tells bridgev2 to pull in anything newer than the last bridged message. Recovering missed messages also needs `backfill.enabled: true`, which is off in the default config — see [Turn on backfill](#turn-on-backfill).
 
 Only conversations that already have a portal are resynced — a timer is not a reason to pull every conversation on the server into Matrix — and when several logins share a conversation, the one that owns the portal does the work.
-
-### Credential storage
-
-The bridge holds a Nextcloud app password per user, because acting as the real person is the whole point of it. Those are encrypted in the database with AES-256-GCM under `network.credential_key`, which is **generated on first run** — there is nothing to switch on:
-
-```yaml
-network:
-    # Written on first start. Back it up with the database.
-    credential_key: cS7nQ...64 characters...tW2v
-```
-
-A stored row then looks like this, and survives being handed to anyone:
-
-```json
-{"server_url":"https://cloud.example.com","username":"alice","app_password":"nctalk:v1:dikHYA4HBUBU…"}
-```
-
-**Be clear about what this protects against.** It protects the database turning up on its own: a backup, a `pg_dump`, a replica, a copied volume, a support bundle. It is *not* protection against someone who has both the database and the config, because that is where the key lives by default.
-
-To separate them, keep the key out of the config entirely. bridgev2 can read any config field from the environment, and a `_FILE` suffix reads it from a path — which is how Docker and Kubernetes secrets work:
-
-```yaml
-# config.yaml
-env_config_prefix: NCTALK_
-network:
-    credential_key: ""     # supplied at runtime instead
-```
-
-```yaml
-# docker-compose.yaml
-services:
-  matrix-nctalk:
-    environment:
-      NCTALK_NETWORK__CREDENTIAL_KEY_FILE: /run/secrets/credential_key
-    secrets:
-      - credential_key
-
-secrets:
-  credential_key:
-    file: ./secrets/credential_key
-```
-
-Two consequences worth knowing before you rely on it:
-
-- **Losing the key is not a leak, but it does cost every login.** Credentials that will not decrypt are reported as `BAD_CREDENTIALS` with a message naming the cause, and the affected user logs in again. The bridge makes no requests to Nextcloud with a credential it could not read, so there is no burst of authentication failures to debug.
-- **Upgrading is transparent.** Credentials written before this existed are read as-is and rewritten encrypted the first time each login connects, which is logged. Nothing needs migrating by hand.
 
 ## Security notes
 
